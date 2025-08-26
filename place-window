@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+# place-window: Position windows in dom0 with mouse selection or window ID
+# Usage:
+#   place-window                  # Interactive mode
+#   place-window ul|ur|ll|lr|c    # Quick presets
+#   place-window <X> <Y> <W> <H>  # Custom geometry
+#   place-window ws <N>           # Move to workspace N (0-based)
+#   place-window save <name>      # Save current window position
+#   place-window load <name>      # Load saved position
+
+set -euo pipefail
+
+CONFIG_DIR="${HOME}/.config/window-positioning"
+PRESETS_FILE="${CONFIG_DIR}/presets.conf"
+SETTINGS_FILE="${CONFIG_DIR}/settings.conf"
+
+# Ensure config directory exists
+mkdir -p "$CONFIG_DIR"
+
+# Initialize settings file if not exists
+if [[ ! -f "$SETTINGS_FILE" ]]; then
+    cat > "$SETTINGS_FILE" << 'EOF'
+# Window positioning settings
+# Gap around windows (in pixels)
+GAP=10
+
+# Panel height (adjust for your XFCE theme)
+PANEL_HEIGHT=32
+
+# Minimum window size
+MIN_WIDTH=400
+MIN_HEIGHT=300
+EOF
+fi
+
+# Initialize presets file if not exists
+if [[ ! -f "$PRESETS_FILE" ]]; then
+    cat > "$PRESETS_FILE" << 'EOF'
+# Window positioning presets
+# Format: NAME=X,Y,WIDTH,HEIGHT
+# You can add custom presets here
+browser-left=10,40,960,1040
+browser-right=970,40,960,1040
+terminal-top=10,40,1920,500
+terminal-bottom=10,580,1920,500
+editor-center=480,270,960,540
+EOF
+fi
+
+# Load settings
+source "$SETTINGS_FILE"
+
+# Set defaults if not in config
+GAP=${GAP:-10}
+PANEL_HEIGHT=${PANEL_HEIGHT:-32}
+MIN_WIDTH=${MIN_WIDTH:-400}
+MIN_HEIGHT=${MIN_HEIGHT:-300}
+
+# Function to pick a window with mouse
+pick_window() {
+    echo "Click on a window to select it..." >&2
+    xdotool selectwindow
+}
+
+# Function to get current window geometry
+get_window_geometry() {
+    local id="$1"
+    xwininfo -id "$id" | awk '
+        /Absolute upper-left X:/ {x=$NF}
+        /Absolute upper-left Y:/ {y=$NF}
+        /Width:/ {w=$NF}
+        /Height:/ {h=$NF}
+        END {print x","y","w","h}
+    '
+}
+
+# Function to apply geometry to window
+apply_geometry() {
+    local id="$1" x="$2" y="$3" w="$4" h="$5"
+    wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
+    echo "Window positioned at: X=$x, Y=$y, Width=$w, Height=$h"
+}
+
+# Function to move window to workspace
+move_to_workspace() {
+    local id="$1" ws="$2"
+    wmctrl -i -r "$id" -t "$ws"
+    echo "Window moved to workspace $((ws + 1))"
+}
+
+# Function to save window position
+save_position() {
+    local name="$1" id="$2"
+    local geom=$(get_window_geometry "$id")
+    
+    # Remove existing entry if exists
+    grep -v "^${name}=" "$PRESETS_FILE" > "${PRESETS_FILE}.tmp" || true
+    mv "${PRESETS_FILE}.tmp" "$PRESETS_FILE"
+    
+    # Add new entry
+    echo "${name}=${geom}" >> "$PRESETS_FILE"
+    echo "Position saved as '$name': $geom"
+}
+
+# Function to load saved position
+load_position() {
+    local name="$1" id="$2"
+    local geom=$(grep "^${name}=" "$PRESETS_FILE" 2>/dev/null | cut -d= -f2)
+    
+    if [[ -z "$geom" ]]; then
+        echo "Error: Preset '$name' not found"
+        echo "Available presets:"
+        grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
+        exit 1
+    fi
+    
+    IFS=',' read -r x y w h <<< "$geom"
+    apply_geometry "$id" "$x" "$y" "$w" "$h"
+}
+
+# Get screen dimensions
+get_screen_info() {
+    xdotool getdisplaygeometry | read -r SCREEN_W SCREEN_H
+    export SCREEN_W SCREEN_H
+}
+
+# Function to ensure minimum window size
+ensure_minimum_size() {
+    local w="$1" h="$2"
+    w=$((w < MIN_WIDTH ? MIN_WIDTH : w))
+    h=$((h < MIN_HEIGHT ? MIN_HEIGHT : h))
+    echo "$w $h"
+}
+
+# Apply preset layouts with configurable gaps
+apply_preset() {
+    local preset="$1" id="$2"
+    get_screen_info
+    
+    # Use configurable values
+    local panel_height=$PANEL_HEIGHT
+    local gap=$GAP
+    
+    # Calculate usable screen area (subtract gaps from all sides)
+    local usable_w=$((SCREEN_W - gap * 3))  # left + middle + right gaps
+    local usable_h=$((SCREEN_H - panel_height - gap * 3))  # top + middle + bottom gaps
+    local half_w=$((usable_w / 2))
+    local half_h=$((usable_h / 2))
+    
+    case "$preset" in
+        ul) # Upper left
+            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
+            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            ;;
+        ur) # Upper right
+            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
+            apply_geometry "$id" $((gap * 2 + half_w)) $((panel_height + gap)) $w $h
+            ;;
+        ll) # Lower left
+            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
+            apply_geometry "$id" $gap $((panel_height + gap * 2 + half_h)) $w $h
+            ;;
+        lr) # Lower right
+            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
+            apply_geometry "$id" $((gap * 2 + half_w)) $((panel_height + gap * 2 + half_h)) $w $h
+            ;;
+        c) # Center
+            local center_w=$((usable_w * 2 / 3))
+            local center_h=$((usable_h * 2 / 3))
+            read -r center_w center_h <<< "$(ensure_minimum_size $center_w $center_h)"
+            local center_x=$(((SCREEN_W - center_w) / 2))
+            local center_y=$(((SCREEN_H - center_h) / 2))
+            apply_geometry "$id" $center_x $center_y $center_w $center_h
+            ;;
+        left) # Left half
+            read -r w h <<< "$(ensure_minimum_size $half_w $usable_h)"
+            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            ;;
+        right) # Right half
+            read -r w h <<< "$(ensure_minimum_size $half_w $usable_h)"
+            apply_geometry "$id" $((gap * 2 + half_w)) $((panel_height + gap)) $w $h
+            ;;
+        top) # Top half
+            read -r w h <<< "$(ensure_minimum_size $usable_w $half_h)"
+            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            ;;
+        bottom) # Bottom half
+            read -r w h <<< "$(ensure_minimum_size $usable_w $half_h)"
+            apply_geometry "$id" $gap $((panel_height + gap * 2 + half_h)) $w $h
+            ;;
+        maximize) # Maximize (with gaps)
+            read -r w h <<< "$(ensure_minimum_size $usable_w $usable_h)"
+            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            ;;
+        *)
+            # Check if it's a saved preset
+            load_position "$preset" "$id"
+            ;;
+    esac
+}
+
+# Interactive mode menu
+interactive_mode() {
+    local id=$(pick_window)
+    
+    echo ""
+    echo "Window Positioning - Interactive Mode"
+    echo "====================================="
+    echo "Current settings: Gap=${GAP}px, Panel=${PANEL_HEIGHT}px"
+    echo ""
+    echo "Quick presets:"
+    echo "  1) Upper left (ul)      6) Left half"
+    echo "  2) Upper right (ur)     7) Right half"
+    echo "  3) Lower left (ll)      8) Top half"
+    echo "  4) Lower right (lr)     9) Bottom half"
+    echo "  5) Center (c)          10) Maximize"
+    echo ""
+    echo "Other options:"
+    echo "  s) Save current position    g) Set gap size"
+    echo "  l) Load saved position      p) Set panel height"
+    echo "  c) Custom coordinates       r) Reload settings"
+    echo "  w) Move to workspace        q) Quit"
+    echo ""
+    
+    read -p "Choose option: " choice
+    
+    case "$choice" in
+        1|ul) apply_preset "ul" "$id" ;;
+        2|ur) apply_preset "ur" "$id" ;;
+        3|ll) apply_preset "ll" "$id" ;;
+        4|lr) apply_preset "lr" "$id" ;;
+        5|c) apply_preset "c" "$id" ;;
+        6) apply_preset "left" "$id" ;;
+        7) apply_preset "right" "$id" ;;
+        8) apply_preset "top" "$id" ;;
+        9) apply_preset "bottom" "$id" ;;
+        10) apply_preset "maximize" "$id" ;;
+        s)
+            read -p "Enter name for this position: " name
+            save_position "$name" "$id"
+            ;;
+        l)
+            echo "Available presets:"
+            grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
+            read -p "Enter preset name: " name
+            load_position "$name" "$id"
+            ;;
+        c)
+            read -p "Enter X Y Width Height (space-separated): " x y w h
+            apply_geometry "$id" "$x" "$y" "$w" "$h"
+            ;;
+        w)
+            read -p "Enter workspace number (1-based): " ws
+            move_to_workspace "$id" $((ws - 1))
+            ;;
+        g)
+            read -p "Enter new gap size (current: ${GAP}px): " new_gap
+            if [[ "$new_gap" =~ ^[0-9]+$ ]]; then
+                sed -i "s/^GAP=.*/GAP=${new_gap}/" "$SETTINGS_FILE"
+                GAP=$new_gap
+                echo "Gap size set to ${new_gap}px"
+            else
+                echo "Invalid gap size. Must be a number."
+            fi
+            ;;
+        p)
+            read -p "Enter new panel height (current: ${PANEL_HEIGHT}px): " new_panel
+            if [[ "$new_panel" =~ ^[0-9]+$ ]]; then
+                sed -i "s/^PANEL_HEIGHT=.*/PANEL_HEIGHT=${new_panel}/" "$SETTINGS_FILE"
+                PANEL_HEIGHT=$new_panel
+                echo "Panel height set to ${new_panel}px"
+            else
+                echo "Invalid panel height. Must be a number."
+            fi
+            ;;
+        r)
+            source "$SETTINGS_FILE"
+            echo "Settings reloaded: Gap=${GAP}px, Panel=${PANEL_HEIGHT}px"
+            ;;
+        q)
+            echo "Exiting..."
+            exit 0
+            ;;
+        *)
+            echo "Invalid option"
+            exit 1
+            ;;
+    esac
+}
+
+# Main logic
+case "${1:-}" in
+    "")
+        # No arguments - interactive mode
+        interactive_mode
+        ;;
+    ul|ur|ll|lr|c|left|right|top|bottom|maximize)
+        # Preset layout
+        id=$(pick_window)
+        apply_preset "$1" "$id"
+        ;;
+    ws)
+        # Move to workspace
+        if [[ -z "${2:-}" ]]; then
+            echo "Error: Workspace number required"
+            exit 1
+        fi
+        id=$(pick_window)
+        move_to_workspace "$id" "$2"
+        ;;
+    save)
+        # Save current position
+        if [[ -z "${2:-}" ]]; then
+            echo "Error: Position name required"
+            exit 1
+        fi
+        id=$(pick_window)
+        save_position "$2" "$id"
+        ;;
+    load)
+        # Load saved position
+        if [[ -z "${2:-}" ]]; then
+            echo "Error: Position name required"
+            exit 1
+        fi
+        id=$(pick_window)
+        load_position "$2" "$id"
+        ;;
+    list)
+        # List saved presets
+        echo "Available presets:"
+        grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
+        ;;
+    config)
+        # Configuration commands
+        case "${2:-}" in
+            gap)
+                if [[ -n "${3:-}" ]]; then
+                    if [[ "$3" =~ ^[0-9]+$ ]]; then
+                        sed -i "s/^GAP=.*/GAP=$3/" "$SETTINGS_FILE"
+                        echo "Gap size set to ${3}px"
+                    else
+                        echo "Error: Gap size must be a number"
+                        exit 1
+                    fi
+                else
+                    echo "Current gap size: ${GAP}px"
+                fi
+                ;;
+            panel)
+                if [[ -n "${3:-}" ]]; then
+                    if [[ "$3" =~ ^[0-9]+$ ]]; then
+                        sed -i "s/^PANEL_HEIGHT=.*/PANEL_HEIGHT=$3/" "$SETTINGS_FILE"
+                        echo "Panel height set to ${3}px"
+                    else
+                        echo "Error: Panel height must be a number"
+                        exit 1
+                    fi
+                else
+                    echo "Current panel height: ${PANEL_HEIGHT}px"
+                fi
+                ;;
+            show)
+                echo "Current settings:"
+                echo "  Gap: ${GAP}px"
+                echo "  Panel height: ${PANEL_HEIGHT}px"
+                echo "  Min window width: ${MIN_WIDTH}px"
+                echo "  Min window height: ${MIN_HEIGHT}px"
+                echo ""
+                echo "Configuration file: $SETTINGS_FILE"
+                ;;
+            *)
+                echo "Configuration commands:"
+                echo "  place-window config gap [SIZE]     Set or show gap size"
+                echo "  place-window config panel [SIZE]   Set or show panel height"
+                echo "  place-window config show           Show all settings"
+                ;;
+        esac
+        ;;
+    help|--help|-h)
+        cat << 'EOF'
+Window Positioning Tool for Qubes OS dom0
+
+Usage:
+  place-window                    Interactive mode
+  place-window ul|ur|ll|lr|c      Quick corner/center presets
+  place-window left|right|top|bottom|maximize  Half-screen presets
+  place-window <X> <Y> <W> <H>    Custom geometry
+  place-window ws <N>             Move to workspace N (0-based)
+  place-window save <name>        Save current window position
+  place-window load <name>        Load saved position
+  place-window list               List all saved presets
+  place-window config <option>    Configuration commands
+  place-window help               Show this help
+
+Quick presets (with configurable gaps):
+  ul - Upper left quarter    left - Left half
+  ur - Upper right quarter   right - Right half
+  ll - Lower left quarter    top - Top half
+  lr - Lower right quarter   bottom - Bottom half
+  c  - Center                maximize - Maximize with gaps
+
+Configuration commands:
+  place-window config gap [SIZE]     Set or show gap size (default: 10px)
+  place-window config panel [SIZE]   Set or show panel height (default: 32px)
+  place-window config show           Show all current settings
+
+Examples:
+  place-window                    # Interactive menu
+  place-window ur                 # Place in upper right with gaps
+  place-window config gap 15      # Set 15px gaps around windows
+  place-window config panel 40    # Set panel height to 40px
+  place-window 100 50 800 600     # Custom position (ignores gaps)
+  place-window save browser-work  # Save position as "browser-work"
+  place-window load browser-work  # Restore saved position
+
+Gap behavior:
+  - All preset layouts maintain the configured gap around windows
+  - Gaps are applied: left, right, top, bottom, and between windows
+  - Custom coordinates ignore gaps and use exact positioning
+  - Minimum window sizes are enforced to prevent too-small windows
+
+Configuration files:
+  Settings: ~/.config/window-positioning/settings.conf
+  Presets:  ~/.config/window-positioning/presets.conf
+EOF
+        ;;
+    *[0-9]*)
+        # Custom geometry (4 numbers)
+        if [[ "$#" -ne 4 ]]; then
+            echo "Error: Custom geometry requires 4 numbers: X Y Width Height"
+            exit 1
+        fi
+        id=$(pick_window)
+        apply_geometry "$id" "$1" "$2" "$3" "$4"
+        ;;
+    *)
+        # Try as saved preset
+        id=$(pick_window)
+        apply_preset "$1" "$id"
+        ;;
+esac
