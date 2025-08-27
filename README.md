@@ -5,6 +5,9 @@ A powerful window positioning tool designed specifically for Qubes OS dom0 that 
 ## Features
 
 - **Auto-Layout**: Automatically arrange all visible windows based on their count (1-5 windows)
+- **Simultaneous Resize**: Resize windows while automatically adjusting adjacent windows (xpytile-inspired)
+- **Master-Stack Layouts**: Traditional tiling WM layouts with master window and stacked secondaries
+- **Focus Navigation**: Navigate between windows using directional commands
 - **Interactive Mode**: Click-to-select windows with a user-friendly menu
 - **Configurable Gaps**: Set custom pixel gaps around all windows (default: 10px)
 - **Quick Presets**: Position windows in common layouts with automatic gap handling
@@ -94,6 +97,27 @@ place-window auto-config 3 three-columns   # Set 3-window layout to columns
 - **4 windows:** grid (2x2), main-three-side, three-top-bottom
 - **5 windows:** center-corners, two-three-columns, grid-wide-bottom
 
+### Master-Stack Layouts
+```bash
+place-window master vertical    # Master left (60%), stack right (40%)
+place-window master horizontal  # Master top (60%), stack bottom (40%)
+```
+Traditional tiling window manager layouts where the first window becomes the "master" and takes up the majority of space, while remaining windows are stacked in the remaining area.
+
+### Simultaneous Resize
+```bash
+place-window resize expand-right 100   # Expand window right by 100px
+place-window resize shrink-down 50     # Shrink window down by 50px
+```
+Resize windows while automatically adjusting adjacent windows to maintain the tiled layout. Inspired by xpytile's simultaneous resize feature.
+
+### Focus Navigation
+```bash
+place-window focus right        # Focus window to the right
+place-window focus next         # Focus next window in sequence
+```
+Navigate between windows using directional or sequential focus commands.
+
 ### Gap Configuration
 ```bash
 place-window config gap 15     # Set 15px gaps around windows
@@ -110,10 +134,13 @@ Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcu
 |---------|---------------|-------------|
 | `place-window` | `Super+Shift+P` | Interactive mode |
 | `place-window auto` | `Super+Shift+A` | Auto-layout all windows |
-| `place-window ul` | `Super+Shift+1` | Upper left |
-| `place-window ur` | `Super+Shift+2` | Upper right |
-| `place-window left` | `Super+Shift+Left` | Left half |
-| `place-window right` | `Super+Shift+Right` | Right half |
+| `place-window master vertical` | `Super+Shift+M` | Master-stack vertical |
+| `place-window focus right` | `Super+Shift+Right` | Focus right window |
+| `place-window focus left` | `Super+Shift+Left` | Focus left window |
+| `place-window focus up` | `Super+Shift+Up` | Focus up window |
+| `place-window focus down` | `Super+Shift+Down` | Focus down window |
+| `place-window resize expand-right` | `Super+Shift+Ctrl+Right` | Expand right |
+| `place-window resize shrink-right` | `Super+Shift+Alt+Right` | Shrink right |
 
 See `~/.config/window-positioning/keyboard-shortcuts.txt` for complete list.
 
@@ -168,23 +195,28 @@ terminal-dev=1220,570,700,510
 place-window auto    # Automatically arranges all visible windows
 ```
 
-**Side-by-side browsing:**
+**Master-stack workflow:**
 ```bash
-# Open two browser windows, then:
-place-window left    # First window
-place-window right   # Second window
-# Or simply:
-place-window auto    # Auto-arranges both windows
+# Open primary application and supporting tools:
+place-window master vertical    # Main app left, others stacked right
+# Or horizontal master:
+place-window master horizontal  # Main app top, others on bottom
+```
+
+**Interactive tiling with resize:**
+```bash
+# Position windows, then fine-tune:
+place-window auto               # Initial arrangement
+place-window resize expand-right 100  # Adjust primary window
+place-window focus right        # Navigate to next window
 ```
 
 **Development layout:**
 ```bash
-# Open editor, browser, and terminal, then:
-place-window auto    # Auto-arranges all 3 windows
-# Or manually:
-place-window load ide-main      # Main editor
-place-window load browser-dev   # Browser for testing
-place-window load terminal-dev  # Terminal
+# Three-window development setup:
+place-window auto               # Auto-arrange editor, browser, terminal
+# Or specific layout:
+place-window master vertical    # Editor master, browser+terminal stacked
 ```
 
 **Customize auto-layout for your workflow:**

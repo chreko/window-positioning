@@ -410,6 +410,237 @@ auto_layout() {
     echo "Auto-layout applied successfully"
 }
 
+# Function to find adjacent windows (side-by-side or stacked)
+find_adjacent_windows() {
+    local target_id="$1"
+    local target_geom=$(get_window_geometry "$target_id")
+    IFS=',' read -r tx ty tw th <<< "$target_geom"
+    
+    local adjacent=()
+    local windows=($(get_visible_windows))
+    
+    for id in "${windows[@]}"; do
+        [[ "$id" == "$target_id" ]] && continue
+        
+        local geom=$(get_window_geometry "$id")
+        IFS=',' read -r x y w h <<< "$geom"
+        
+        # Check if windows share an edge (horizontally or vertically adjacent)
+        local gap_tolerance=20  # Allow for small gaps
+        
+        # Horizontal adjacency (side by side)
+        if [[ $((ty - gap_tolerance)) -le $((y + h)) && $((ty + th + gap_tolerance)) -ge $y ]]; then
+            # Left adjacent
+            if [[ $((tx - gap_tolerance)) -le $((x + w)) && $((tx - gap_tolerance)) -ge $x ]]; then
+                adjacent+=("$id:left")
+            fi
+            # Right adjacent  
+            if [[ $((tx + tw + gap_tolerance)) -ge $x && $((tx + tw - gap_tolerance)) -le $((x + w)) ]]; then
+                adjacent+=("$id:right")
+            fi
+        fi
+        
+        # Vertical adjacency (stacked)
+        if [[ $((tx - gap_tolerance)) -le $((x + w)) && $((tx + tw + gap_tolerance)) -ge $x ]]; then
+            # Top adjacent
+            if [[ $((ty - gap_tolerance)) -le $((y + h)) && $((ty - gap_tolerance)) -ge $y ]]; then
+                adjacent+=("$id:top")
+            fi
+            # Bottom adjacent
+            if [[ $((ty + th + gap_tolerance)) -ge $y && $((ty + th - gap_tolerance)) -le $((y + h)) ]]; then
+                adjacent+=("$id:bottom")
+            fi
+        fi
+    done
+    
+    printf '%s\n' "${adjacent[@]}"
+}
+
+# Simultaneous resize function
+simultaneous_resize() {
+    local direction="$1"  # expand-right, shrink-right, expand-down, shrink-down
+    local amount="${2:-50}"  # pixels to resize
+    
+    local target_id=$(pick_window)
+    echo "Finding adjacent windows..."
+    
+    local adjacent=($(find_adjacent_windows "$target_id"))
+    if [[ ${#adjacent[@]} -eq 0 ]]; then
+        echo "No adjacent windows found for simultaneous resize"
+        return 1
+    fi
+    
+    echo "Found ${#adjacent[@]} adjacent window(s)"
+    
+    local target_geom=$(get_window_geometry "$target_id")
+    IFS=',' read -r tx ty tw th <<< "$target_geom"
+    
+    case "$direction" in
+        expand-right|shrink-right)
+            local new_tw=$((tw + (direction == "expand-right" ? amount : -amount)))
+            apply_geometry "$target_id" $tx $ty $new_tw $th
+            
+            # Adjust right-adjacent windows
+            for adj in "${adjacent[@]}"; do
+                local adj_id="${adj%:*}"
+                local adj_dir="${adj#*:}"
+                if [[ "$adj_dir" == "right" ]]; then
+                    local adj_geom=$(get_window_geometry "$adj_id")
+                    IFS=',' read -r ax ay aw ah <<< "$adj_geom"
+                    local new_ax=$((ax + (direction == "expand-right" ? amount : -amount)))
+                    local new_aw=$((aw + (direction == "expand-right" ? -amount : amount)))
+                    apply_geometry "$adj_id" $new_ax $ay $new_aw $ah
+                fi
+            done
+            ;;
+        expand-down|shrink-down)
+            local new_th=$((th + (direction == "expand-down" ? amount : -amount)))
+            apply_geometry "$target_id" $tx $ty $tw $new_th
+            
+            # Adjust bottom-adjacent windows
+            for adj in "${adjacent[@]}"; do
+                local adj_id="${adj%:*}"
+                local adj_dir="${adj#*:}"
+                if [[ "$adj_dir" == "bottom" ]]; then
+                    local adj_geom=$(get_window_geometry "$adj_id")
+                    IFS=',' read -r ax ay aw ah <<< "$adj_geom"
+                    local new_ay=$((ay + (direction == "expand-down" ? amount : -amount)))
+                    local new_ah=$((ah + (direction == "expand-down" ? -amount : amount)))
+                    apply_geometry "$adj_id" $new_ax $new_ay $aw $new_ah
+                fi
+            done
+            ;;
+    esac
+    
+    echo "Simultaneous resize completed"
+}
+
+# Master-stack layouts (xpytile-inspired)
+master_stack_layout() {
+    local orientation="$1"  # vertical or horizontal
+    local windows=($(get_visible_windows))
+    local count=${#windows[@]}
+    
+    if [[ $count -lt 2 ]]; then
+        echo "Master-stack requires at least 2 windows"
+        return 1
+    fi
+    
+    get_screen_info
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    local usable_w=$((SCREEN_W - gap * 3))
+    local usable_h=$((SCREEN_H - panel_height - gap * 2))
+    
+    # Master window gets 60% of space, stack gets 40%
+    local master_id="${windows[0]}"
+    local stack_ids=("${windows[@]:1}")
+    
+    case "$orientation" in
+        vertical)
+            # Master on left, stack on right
+            local master_w=$((usable_w * 60 / 100))
+            local stack_w=$((usable_w - master_w))
+            local stack_h=$((usable_h / ${#stack_ids[@]}))
+            
+            # Position master
+            apply_geometry "$master_id" $gap $((panel_height + gap)) $master_w $usable_h
+            
+            # Position stack
+            local stack_y=$((panel_height + gap))
+            for stack_id in "${stack_ids[@]}"; do
+                apply_geometry "$stack_id" $((gap * 2 + master_w)) $stack_y $stack_w $((stack_h - gap))
+                stack_y=$((stack_y + stack_h))
+            done
+            ;;
+        horizontal)
+            # Master on top, stack on bottom
+            local master_h=$((usable_h * 60 / 100))
+            local stack_h=$((usable_h - master_h))
+            local stack_w=$((usable_w / ${#stack_ids[@]}))
+            
+            # Position master
+            apply_geometry "$master_id" $gap $((panel_height + gap)) $usable_w $master_h
+            
+            # Position stack
+            local stack_x=$gap
+            for stack_id in "${stack_ids[@]}"; do
+                apply_geometry "$stack_id" $stack_x $((panel_height + gap * 2 + master_h)) $((stack_w - gap)) $stack_h
+                stack_x=$((stack_x + stack_w))
+            done
+            ;;
+    esac
+    
+    echo "Master-stack layout ($orientation) applied to $count windows"
+}
+
+# Focus navigation
+focus_window() {
+    local direction="$1"  # next, prev, up, down, left, right
+    local current_id=$(xdotool getactivewindow 2>/dev/null || echo "")
+    
+    if [[ -z "$current_id" ]]; then
+        echo "No active window found"
+        return 1
+    fi
+    
+    local windows=($(get_visible_windows))
+    local target_id=""
+    
+    case "$direction" in
+        next)
+            # Find next window in list
+            for i in "${!windows[@]}"; do
+                if [[ "${windows[i]}" == "$current_id" ]]; then
+                    target_id="${windows[$(((i + 1) % ${#windows[@]}))]}"
+                    break
+                fi
+            done
+            ;;
+        prev)
+            # Find previous window in list
+            for i in "${!windows[@]}"; do
+                if [[ "${windows[i]}" == "$current_id" ]]; then
+                    target_id="${windows[$(((i - 1 + ${#windows[@]}) % ${#windows[@]}))]}"
+                    break
+                fi
+            done
+            ;;
+        up|down|left|right)
+            # Find geometrically adjacent window
+            local current_geom=$(get_window_geometry "$current_id")
+            IFS=',' read -r cx cy cw ch <<< "$current_geom"
+            local best_distance=999999
+            
+            for id in "${windows[@]}"; do
+                [[ "$id" == "$current_id" ]] && continue
+                
+                local geom=$(get_window_geometry "$id")
+                IFS=',' read -r x y w h <<< "$geom"
+                
+                case "$direction" in
+                    up)    [[ $((y + h)) -le $cy ]] && distance=$((cy - (y + h))) ;;
+                    down)  [[ $y -ge $((cy + ch)) ]] && distance=$((y - (cy + ch))) ;;
+                    left)  [[ $((x + w)) -le $cx ]] && distance=$((cx - (x + w))) ;;
+                    right) [[ $x -ge $((cx + cw)) ]] && distance=$((x - (cx + cw))) ;;
+                esac
+                
+                if [[ ${distance:-999999} -lt $best_distance ]]; then
+                    best_distance=$distance
+                    target_id="$id"
+                fi
+            done
+            ;;
+    esac
+    
+    if [[ -n "$target_id" ]]; then
+        xdotool windowactivate "$target_id"
+        echo "Focused window: $target_id"
+    else
+        echo "No window found in direction: $direction"
+    fi
+}
+
 # Apply preset layouts with configurable gaps
 apply_preset() {
     local preset="$1" id="$2"
@@ -613,6 +844,55 @@ case "${1:-}" in
         # Auto-layout all visible windows
         auto_layout
         ;;
+    resize)
+        # Simultaneous resize with adjacent windows
+        case "${2:-}" in
+            expand-right|shrink-right|expand-down|shrink-down)
+                simultaneous_resize "$2" "${3:-50}"
+                ;;
+            *)
+                echo "Resize commands:"
+                echo "  place-window resize expand-right [pixels]   Expand right, shrink adjacent"
+                echo "  place-window resize shrink-right [pixels]   Shrink right, expand adjacent"
+                echo "  place-window resize expand-down [pixels]    Expand down, shrink adjacent"
+                echo "  place-window resize shrink-down [pixels]    Shrink down, expand adjacent"
+                echo ""
+                echo "Default resize amount: 50 pixels"
+                ;;
+        esac
+        ;;
+    master)
+        # Master-stack layouts
+        case "${2:-}" in
+            vertical|horizontal)
+                master_stack_layout "$2"
+                ;;
+            *)
+                echo "Master-stack layouts:"
+                echo "  place-window master vertical     Master left, stack right"
+                echo "  place-window master horizontal   Master top, stack bottom"
+                echo ""
+                echo "Master window gets 60% of space, others stack in remaining 40%"
+                ;;
+        esac
+        ;;
+    focus)
+        # Focus navigation
+        case "${2:-}" in
+            next|prev|up|down|left|right)
+                focus_window "$2"
+                ;;
+            *)
+                echo "Focus navigation:"
+                echo "  place-window focus next     Focus next window"
+                echo "  place-window focus prev     Focus previous window"
+                echo "  place-window focus up       Focus window above"
+                echo "  place-window focus down     Focus window below"
+                echo "  place-window focus left     Focus window to the left"
+                echo "  place-window focus right    Focus window to the right"
+                ;;
+        esac
+        ;;
     auto-config)
         # Configure auto-layout preferences
         case "${2:-}" in
@@ -756,6 +1036,9 @@ Usage:
   place-window left|right|top|bottom|maximize  Half-screen presets
   place-window auto               Auto-layout all visible windows
   place-window auto-config <N> [layout]  Configure auto-layout preferences
+  place-window resize <direction> [pixels]  Simultaneous resize with adjacent windows
+  place-window master <orientation>  Master-stack layouts
+  place-window focus <direction>  Navigate between windows
   place-window <X> <Y> <W> <H>    Custom geometry
   place-window ws <N>             Move to workspace N (0-based)
   place-window save <name>        Save current window position
@@ -783,6 +1066,20 @@ Auto-layout:
     4 windows: grid, main-three-side, three-top-bottom
     5 windows: center-corners, two-three-columns, grid-wide-bottom
 
+Master-stack layouts (xpytile-inspired):
+  place-window master vertical     Master left (60%), stack right (40%)
+  place-window master horizontal   Master top (60%), stack bottom (40%)
+
+Simultaneous resize (affects adjacent windows):
+  place-window resize expand-right [pixels]   Expand right, shrink adjacent
+  place-window resize shrink-right [pixels]   Shrink right, expand adjacent
+  place-window resize expand-down [pixels]    Expand down, shrink adjacent
+  place-window resize shrink-down [pixels]    Shrink down, expand adjacent
+
+Focus navigation:
+  place-window focus next/prev     Cycle through windows
+  place-window focus up/down/left/right  Navigate geometrically
+
 Configuration commands:
   place-window config gap [SIZE]     Set or show gap size (default: 10px)
   place-window config panel [SIZE]   Set or show panel height (default: 32px)
@@ -791,21 +1088,27 @@ Configuration commands:
 Examples:
   place-window                    # Interactive menu
   place-window auto               # Auto-arrange all visible windows
-  place-window ur                 # Place in upper right with gaps
+  place-window master vertical    # Master-stack with master on left
+  place-window resize expand-right 100  # Expand window right by 100px
+  place-window focus right        # Focus window to the right
   place-window auto-config 2 primary-secondary  # 70/30 split for 2 windows
   place-window config gap 15      # Set 15px gaps around windows
-  place-window 100 50 800 600     # Custom position (ignores gaps)
-  place-window save browser-work  # Save position as "browser-work"
 
 Gap behavior:
-  - All preset layouts maintain the configured gap around windows
+  - All layouts maintain the configured gap around windows
   - Gaps are applied: left, right, top, bottom, and between windows
-  - Custom coordinates ignore gaps and use exact positioning
-  - Auto-layout respects gap settings for all arrangements
+  - Custom coordinates ignore gaps for exact positioning
+  - Simultaneous resize preserves gaps between adjacent windows
 
 Configuration files:
   Settings: ~/.config/window-positioning/settings.conf
   Presets:  ~/.config/window-positioning/presets.conf
+
+Advanced Features (inspired by xpytile):
+  • Simultaneous resize of adjacent windows
+  • Master-stack layouts with configurable ratios
+  • Geometric focus navigation
+  • Auto-layout based on window count
 EOF
         ;;
     *[0-9]*)
