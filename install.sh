@@ -5,10 +5,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="${HOME}/.config/window-positioning"
+
+# Get the real user (not root when using sudo)
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+CONFIG_DIR="${REAL_HOME}/.config/window-positioning"
 
 echo "Window Positioning Tool Installer for Qubes OS dom0"
 echo "=================================================="
+echo "Installing for user: $REAL_USER (home: $REAL_HOME)"
+echo "Config will be created at: $CONFIG_DIR"
+echo ""
 
 # Check if running in dom0
 if [[ ! -f /proc/xen/capabilities ]] || ! grep -q "control_d" /proc/xen/capabilities 2>/dev/null; then
@@ -47,8 +54,12 @@ sudo chmod +x "$INSTALL_DIR/place-window"
 echo "✓ Installed to $INSTALL_DIR/place-window"
 
 # Create config directory and default configuration
-echo "Setting up configuration..."
+echo "Setting up configuration for user: $REAL_USER"
+echo "Config directory: $CONFIG_DIR"
+
+# Create config directory with proper ownership
 mkdir -p "$CONFIG_DIR"
+chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR" 2>/dev/null || true
 
 # Create settings configuration
 if [[ ! -f "$CONFIG_DIR/settings.conf" ]]; then
@@ -63,7 +74,22 @@ PANEL_HEIGHT=32
 # Minimum window size
 MIN_WIDTH=400
 MIN_HEIGHT=300
+
+# Auto-layout preferences
+# Available layouts for each window count:
+# 1 window: maximize
+# 2 windows: equal, primary-secondary, secondary-primary
+# 3 windows: main-two-side, three-columns, center-sidebars
+# 4 windows: grid, main-three-side, three-top-bottom
+# 5 windows: center-corners, two-three-columns, grid-wide-bottom
+
+AUTO_LAYOUT_1="maximize"
+AUTO_LAYOUT_2="equal"
+AUTO_LAYOUT_3="main-two-side"
+AUTO_LAYOUT_4="grid"
+AUTO_LAYOUT_5="grid-wide-bottom"
 EOF
+    chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/settings.conf" 2>/dev/null || true
     echo "✓ Created settings configuration"
 else
     echo "✓ Existing settings configuration preserved"
@@ -99,6 +125,7 @@ ide-main=10,40,1200,1040
 browser-dev=1220,40,700,520
 terminal-dev=1220,570,700,510
 EOF
+    chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/presets.conf" 2>/dev/null || true
     echo "✓ Created default presets configuration"
 else
     echo "✓ Existing presets configuration preserved"
@@ -156,6 +183,7 @@ Key: Super+Shift+Down
 Description: Bottom half of screen
 EOF
 
+chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/keyboard-shortcuts.txt" 2>/dev/null || true
 echo "✓ Created keyboard shortcuts reference"
 
 # Create uninstaller
@@ -164,10 +192,10 @@ cat > "$CONFIG_DIR/uninstall.sh" << EOF
 # Uninstaller for window positioning tool
 
 echo "Removing window positioning tool..."
-sudo rm -f "$INSTALL_DIR/place-window"
-echo "✓ Removed script from $INSTALL_DIR/"
+sudo rm -f "/usr/local/bin/place-window"
+echo "✓ Removed script from /usr/local/bin/"
 
-read -p "Also remove configuration directory ~/.config/window-positioning? [y/N]: " confirm
+read -p "Also remove configuration directory $CONFIG_DIR? [y/N]: " confirm
 if [[ "\$confirm" == [yY] ]]; then
     rm -rf "$CONFIG_DIR"
     echo "✓ Removed configuration directory"
@@ -179,6 +207,7 @@ echo "Uninstallation complete."
 EOF
 
 chmod +x "$CONFIG_DIR/uninstall.sh"
+chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/uninstall.sh" 2>/dev/null || true
 
 echo ""
 echo "Installation Complete!"

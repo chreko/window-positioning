@@ -4,6 +4,7 @@ A powerful window positioning tool designed specifically for Qubes OS dom0 that 
 
 ## Features
 
+- **Multi-Monitor Support**: Automatically detects and works with multiple monitors
 - **Auto-Layout**: Automatically arrange all visible windows based on their count (1-5 windows)
 - **Simultaneous Resize**: Resize windows while automatically adjusting adjacent windows (xpytile-inspired)
 - **Master-Stack Layouts**: Traditional tiling WM layouts with master window and stacked secondaries
@@ -27,10 +28,14 @@ A powerful window positioning tool designed specifically for Qubes OS dom0 that 
    ```
 
 The installer will:
+- **Auto-detect the real user** (works correctly even when run with sudo)
 - Check for and install required dependencies (`xdotool`, `wmctrl`)
-- Install the script to `/usr/local/bin/place-window`
-- Create configuration directory with default presets
-- Generate keyboard shortcuts reference
+- Install the script to `/usr/local/bin/place-window` 
+- Create configuration directory: `~/.config/window-positioning/` (in actual user's home)
+- Generate default configuration files with proper ownership
+- Create keyboard shortcuts reference and uninstaller
+
+**Important**: The installer correctly handles user vs root permissions - config files are created in the actual user's home directory, not root's.
 
 ## Usage
 
@@ -117,6 +122,28 @@ place-window focus right        # Focus window to the right
 place-window focus next         # Focus next window in sequence
 ```
 Navigate between windows using directional or sequential focus commands.
+
+### Multi-Monitor Support
+```bash
+place-window monitors           # Show detected monitors and usable areas
+```
+**Monitor-Aware Features:**
+- **Preset positioning**: `ul`, `ur`, `left`, etc. work within the window's current monitor
+- **Auto-layout**: Groups windows by monitor and applies layouts independently
+- **Smart panel handling**: Panel height only applied to primary monitor
+- **Boundary detection**: Windows stay within monitor boundaries
+
+**Example Multi-Monitor Usage:**
+```bash
+# Check your monitor setup
+place-window monitors
+
+# Windows on each monitor get arranged independently
+place-window auto
+
+# Position window within its current monitor
+place-window ul     # Upper-left of current monitor, not screen
+```
 
 ### Gap Configuration
 ```bash

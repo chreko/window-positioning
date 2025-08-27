@@ -132,10 +132,89 @@ load_position() {
     apply_geometry "$id" "$x" "$y" "$w" "$h"
 }
 
-# Get screen dimensions
+# Get screen and monitor information
 get_screen_info() {
+    # Get total screen dimensions
     xdotool getdisplaygeometry | read -r SCREEN_W SCREEN_H
     export SCREEN_W SCREEN_H
+    
+    # Get monitor information using xrandr
+    MONITORS=()
+    while IFS= read -r line; do
+        if [[ $line =~ ^([^[:space:]]+)[[:space:]]+connected[[:space:]]+([0-9]+x[0-9]+\+[0-9]+\+[0-9]+) ]]; then
+            local name="${BASH_REMATCH[1]}"
+            local geometry="${BASH_REMATCH[2]}"
+            # Parse geometry: WIDTHxHEIGHT+X+Y
+            if [[ $geometry =~ ^([0-9]+)x([0-9]+)\+([0-9]+)\+([0-9]+)$ ]]; then
+                local w="${BASH_REMATCH[1]}"
+                local h="${BASH_REMATCH[2]}"
+                local x="${BASH_REMATCH[3]}"
+                local y="${BASH_REMATCH[4]}"
+                MONITORS+=("$name:$x:$y:$w:$h")
+            fi
+        fi
+    done < <(xrandr --query 2>/dev/null)
+    
+    export MONITORS
+    
+    # If no monitors detected, create a fallback for the entire screen
+    if [[ ${#MONITORS[@]} -eq 0 ]]; then
+        MONITORS=("default:0:0:$SCREEN_W:$SCREEN_H")
+    fi
+}
+
+# Get which monitor a window is primarily on
+get_window_monitor() {
+    local window_id="$1"
+    local geom=$(get_window_geometry "$window_id")
+    IFS=',' read -r wx wy ww wh <<< "$geom"
+    
+    local best_monitor=""
+    local best_overlap=0
+    
+    for monitor in "${MONITORS[@]}"; do
+        IFS=':' read -r name mx my mw mh <<< "$monitor"
+        
+        # Calculate overlap area
+        local overlap_x1=$((wx > mx ? wx : mx))
+        local overlap_y1=$((wy > my ? wy : my))
+        local overlap_x2=$(((wx + ww) < (mx + mw) ? (wx + ww) : (mx + mw)))
+        local overlap_y2=$(((wy + wh) < (my + mh) ? (wy + wh) : (my + mh)))
+        
+        if [[ $overlap_x2 -gt $overlap_x1 && $overlap_y2 -gt $overlap_y1 ]]; then
+            local overlap_area=$(((overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)))
+            if [[ $overlap_area -gt $best_overlap ]]; then
+                best_overlap=$overlap_area
+                best_monitor="$monitor"
+            fi
+        fi
+    done
+    
+    # If no overlap found, use first monitor
+    [[ -z "$best_monitor" ]] && best_monitor="${MONITORS[0]}"
+    echo "$best_monitor"
+}
+
+# Get monitor-specific layout area
+get_monitor_layout_area() {
+    local monitor="$1"
+    IFS=':' read -r name mx my mw mh <<< "$monitor"
+    
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    
+    # Adjust for panel only on primary monitor (usually the one containing 0,0)
+    local effective_panel_height=0
+    if [[ $mx -eq 0 && $my -eq 0 ]]; then
+        effective_panel_height=$panel_height
+    fi
+    
+    local usable_x=$((mx + gap))
+    local usable_y=$((my + effective_panel_height + gap))
+    local usable_w=$((mw - gap * 2))
+    local usable_h=$((mh - effective_panel_height - gap * 2))
+    
+    echo "$usable_x:$usable_y:$usable_w:$usable_h"
 }
 
 # Function to ensure minimum window size
@@ -359,7 +438,7 @@ auto_layout_5_windows() {
     esac
 }
 
-# Main auto-layout function
+# Main auto-layout function (monitor-aware)
 auto_layout() {
     echo "Detecting visible windows..."
     local windows=($(get_visible_windows))
@@ -370,44 +449,249 @@ auto_layout() {
         return 1
     fi
     
-    echo "Found $count visible window(s)"
+    get_screen_info
     
-    # Load auto-layout preferences
-    source "$SETTINGS_FILE"
+    # Group windows by monitor
+    declare -A monitor_windows
+    for window_id in "${windows[@]}"; do
+        local monitor=$(get_window_monitor "$window_id")
+        IFS=':' read -r name mx my mw mh <<< "$monitor"
+        local key="${mx},${my}"  # Use coordinates as unique key
+        if [[ -z "${monitor_windows[$key]}" ]]; then
+            monitor_windows[$key]="$window_id"
+        else
+            monitor_windows[$key]="${monitor_windows[$key]} $window_id"
+        fi
+    done
     
-    case $count in
-        1)
-            echo "Applying layout: ${AUTO_LAYOUT_1:-maximize}"
-            auto_layout_1_window "${windows[0]}"
+    echo "Found $count visible window(s) across ${#monitor_windows[@]} monitor(s)"
+    
+    # Apply layout to each monitor's windows
+    for key in "${!monitor_windows[@]}"; do
+        local window_list=(${monitor_windows[$key]})
+        local window_count=${#window_list[@]}
+        
+        # Find the monitor info for this group
+        local target_monitor=""
+        for monitor in "${MONITORS[@]}"; do
+            IFS=':' read -r name mx my mw mh <<< "$monitor"
+            if [[ "$key" == "${mx},${my}" ]]; then
+                target_monitor="$monitor"
+                break
+            fi
+        done
+        
+        if [[ -n "$target_monitor" ]]; then
+            IFS=':' read -r name mx my mw mh <<< "$target_monitor"
+            echo "Monitor $name: Arranging $window_count window(s)"
+            
+            # Apply layout based on window count on this monitor
+            source "$SETTINGS_FILE"
+            case $window_count in
+                1)
+                    echo "  Applying layout: ${AUTO_LAYOUT_1:-maximize}"
+                    auto_layout_monitor_1_window "$target_monitor" "${window_list[0]}"
+                    ;;
+                2)
+                    local layout="${AUTO_LAYOUT_2:-equal}"
+                    echo "  Applying 2-window layout: $layout"
+                    auto_layout_monitor_2_windows "$target_monitor" "$layout" "${window_list[@]}"
+                    ;;
+                3)
+                    local layout="${AUTO_LAYOUT_3:-main-two-side}"
+                    echo "  Applying 3-window layout: $layout"
+                    auto_layout_monitor_3_windows "$target_monitor" "$layout" "${window_list[@]}"
+                    ;;
+                4)
+                    local layout="${AUTO_LAYOUT_4:-grid}"
+                    echo "  Applying 4-window layout: $layout"
+                    auto_layout_monitor_4_windows "$target_monitor" "$layout" "${window_list[@]}"
+                    ;;
+                5)
+                    local layout="${AUTO_LAYOUT_5:-grid-wide-bottom}"
+                    echo "  Applying 5-window layout: $layout"
+                    auto_layout_monitor_5_windows "$target_monitor" "$layout" "${window_list[@]}"
+                    ;;
+                *)
+                    echo "  Warning: $window_count windows on this monitor (max 5 supported)"
+                    # Fall back to maximize first window
+                    auto_layout_monitor_1_window "$target_monitor" "${window_list[0]}"
+                    ;;
+            esac
+        fi
+    done
+    
+    echo "Multi-monitor auto-layout applied successfully"
+}
+
+# Monitor-specific auto-layout functions
+auto_layout_monitor_1_window() {
+    local monitor="$1" id="$2"
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+    
+    # Maximize with gaps
+    apply_geometry "$id" $usable_x $usable_y $usable_w $usable_h
+}
+
+auto_layout_monitor_2_windows() {
+    local monitor="$1" layout="$2"
+    shift 2
+    local ids=("$@")
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+    
+    case "$layout" in
+        equal)
+            # 50/50 split
+            local w=$((usable_w / 2))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $usable_h
             ;;
-        2)
-            local layout="${AUTO_LAYOUT_2:-equal}"
-            echo "Applying 2-window layout: $layout"
-            auto_layout_2_windows "$layout" "${windows[@]}"
+        primary-secondary)
+            # 70/30 split
+            local w1=$((usable_w * 70 / 100))
+            local w2=$((usable_w - w1))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $usable_h
             ;;
-        3)
-            local layout="${AUTO_LAYOUT_3:-main-two-side}"
-            echo "Applying 3-window layout: $layout"
-            auto_layout_3_windows "$layout" "${windows[@]}"
-            ;;
-        4)
-            local layout="${AUTO_LAYOUT_4:-grid}"
-            echo "Applying 4-window layout: $layout"
-            auto_layout_4_windows "$layout" "${windows[@]}"
-            ;;
-        5)
-            local layout="${AUTO_LAYOUT_5:-grid-wide-bottom}"
-            echo "Applying 5-window layout: $layout"
-            auto_layout_5_windows "$layout" "${windows[@]}"
-            ;;
-        *)
-            echo "Auto-layout supports 1-5 windows. Found $count windows."
-            echo "Consider manually arranging or closing some windows."
-            return 1
+        secondary-primary)
+            # 30/70 split
+            local w1=$((usable_w * 30 / 100))
+            local w2=$((usable_w - w1))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $usable_h
             ;;
     esac
+}
+
+auto_layout_monitor_3_windows() {
+    local monitor="$1" layout="$2"
+    shift 2
+    local ids=("$@")
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     
-    echo "Auto-layout applied successfully"
+    case "$layout" in
+        main-two-side)
+            # One left half, two stacked on right
+            local w1=$((usable_w / 2))
+            local w2=$((usable_w - w1))
+            local h2=$((usable_h / 2))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $h2
+            apply_geometry "${ids[2]}" $((usable_x + w1)) $((usable_y + h2)) $w2 $h2
+            ;;
+        three-columns)
+            # Three equal columns
+            local w=$((usable_w / 3))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $usable_h
+            apply_geometry "${ids[2]}" $((usable_x + w * 2)) $usable_y $w $usable_h
+            ;;
+        center-sidebars)
+            # 20/60/20 split
+            local w1=$((usable_w * 20 / 100))
+            local w2=$((usable_w * 60 / 100))
+            local w3=$((usable_w - w1 - w2))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $usable_h
+            apply_geometry "${ids[2]}" $((usable_x + w1 + w2)) $usable_y $w3 $usable_h
+            ;;
+    esac
+}
+
+auto_layout_monitor_4_windows() {
+    local monitor="$1" layout="$2"
+    shift 2
+    local ids=("$@")
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+    
+    case "$layout" in
+        grid)
+            # 2x2 grid
+            local w=$((usable_w / 2))
+            local h=$((usable_h / 2))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w $h
+            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $h
+            apply_geometry "${ids[2]}" $usable_x $((usable_y + h)) $w $h
+            apply_geometry "${ids[3]}" $((usable_x + w)) $((usable_y + h)) $w $h
+            ;;
+        main-three-side)
+            # One left half, three stacked on right
+            local w1=$((usable_w / 2))
+            local w2=$((usable_w - w1))
+            local h2=$((usable_h / 3))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $h2
+            apply_geometry "${ids[2]}" $((usable_x + w1)) $((usable_y + h2)) $w2 $h2
+            apply_geometry "${ids[3]}" $((usable_x + w1)) $((usable_y + h2 * 2)) $w2 $h2
+            ;;
+        three-top-bottom)
+            # Three columns on top, one wide bottom
+            local h1=$((usable_h * 60 / 100))
+            local h2=$((usable_h - h1))
+            local w1=$((usable_w * 20 / 100))
+            local w2=$((usable_w * 60 / 100))
+            local w3=$((usable_w - w1 - w2))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $h1
+            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $h1
+            apply_geometry "${ids[2]}" $((usable_x + w1 + w2)) $usable_y $w3 $h1
+            apply_geometry "${ids[3]}" $usable_x $((usable_y + h1)) $usable_w $h2
+            ;;
+    esac
+}
+
+auto_layout_monitor_5_windows() {
+    local monitor="$1" layout="$2"
+    shift 2
+    local ids=("$@")
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+    
+    case "$layout" in
+        center-corners)
+            # One center, four corners
+            local corner_w=$((usable_w * 30 / 100))
+            local corner_h=$((usable_h * 40 / 100))
+            local center_w=$((usable_w - corner_w * 2))
+            local center_h=$((usable_h - corner_h * 2))
+            local center_x=$((usable_x + corner_w))
+            local center_y=$((usable_y + corner_h))
+            
+            # Center window
+            apply_geometry "${ids[0]}" $center_x $center_y $center_w $center_h
+            # Corners
+            apply_geometry "${ids[1]}" $usable_x $usable_y $corner_w $corner_h
+            apply_geometry "${ids[2]}" $((usable_x + usable_w - corner_w)) $usable_y $corner_w $corner_h
+            apply_geometry "${ids[3]}" $usable_x $((usable_y + usable_h - corner_h)) $corner_w $corner_h
+            apply_geometry "${ids[4]}" $((usable_x + usable_w - corner_w)) $((usable_y + usable_h - corner_h)) $corner_w $corner_h
+            ;;
+        two-three-columns)
+            # 2 windows on left, 3 on right
+            local w=$((usable_w / 2))
+            local h_left=$((usable_h / 2))
+            local h_right=$((usable_h / 3))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w $h_left
+            apply_geometry "${ids[1]}" $usable_x $((usable_y + h_left)) $w $h_left
+            apply_geometry "${ids[2]}" $((usable_x + w)) $usable_y $w $h_right
+            apply_geometry "${ids[3]}" $((usable_x + w)) $((usable_y + h_right)) $w $h_right
+            apply_geometry "${ids[4]}" $((usable_x + w)) $((usable_y + h_right * 2)) $w $h_right
+            ;;
+        grid-wide-bottom)
+            # 2x2 grid on top, one wide on bottom
+            local h1=$((usable_h * 60 / 100))
+            local h2=$((usable_h - h1))
+            local w=$((usable_w / 2))
+            local h_grid=$((h1 / 2))
+            apply_geometry "${ids[0]}" $usable_x $usable_y $w $h_grid
+            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $h_grid
+            apply_geometry "${ids[2]}" $usable_x $((usable_y + h_grid)) $w $h_grid
+            apply_geometry "${ids[3]}" $((usable_x + w)) $((usable_y + h_grid)) $w $h_grid
+            apply_geometry "${ids[4]}" $usable_x $((usable_y + h1)) $usable_w $h2
+            ;;
+    esac
 }
 
 # Function to find adjacent windows (side-by-side or stacked)
@@ -641,65 +925,63 @@ focus_window() {
     fi
 }
 
-# Apply preset layouts with configurable gaps
+# Apply preset layouts with configurable gaps (monitor-aware)
 apply_preset() {
     local preset="$1" id="$2"
     get_screen_info
     
-    # Use configurable values
-    local panel_height=$PANEL_HEIGHT
-    local gap=$GAP
+    # Determine which monitor the window is primarily on
+    local monitor=$(get_window_monitor "$id")
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     
-    # Calculate usable screen area (subtract gaps from all sides)
-    local usable_w=$((SCREEN_W - gap * 3))  # left + middle + right gaps
-    local usable_h=$((SCREEN_H - panel_height - gap * 3))  # top + middle + bottom gaps
     local half_w=$((usable_w / 2))
     local half_h=$((usable_h / 2))
     
     case "$preset" in
         ul) # Upper left
             read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            apply_geometry "$id" $usable_x $usable_y $w $h
             ;;
         ur) # Upper right
             read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $((gap * 2 + half_w)) $((panel_height + gap)) $w $h
+            apply_geometry "$id" $((usable_x + half_w)) $usable_y $w $h
             ;;
         ll) # Lower left
             read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $gap $((panel_height + gap * 2 + half_h)) $w $h
+            apply_geometry "$id" $usable_x $((usable_y + half_h)) $w $h
             ;;
         lr) # Lower right
             read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $((gap * 2 + half_w)) $((panel_height + gap * 2 + half_h)) $w $h
+            apply_geometry "$id" $((usable_x + half_w)) $((usable_y + half_h)) $w $h
             ;;
         c) # Center
             local center_w=$((usable_w * 2 / 3))
             local center_h=$((usable_h * 2 / 3))
             read -r center_w center_h <<< "$(ensure_minimum_size $center_w $center_h)"
-            local center_x=$(((SCREEN_W - center_w) / 2))
-            local center_y=$(((SCREEN_H - center_h) / 2))
+            local center_x=$((usable_x + (usable_w - center_w) / 2))
+            local center_y=$((usable_y + (usable_h - center_h) / 2))
             apply_geometry "$id" $center_x $center_y $center_w $center_h
             ;;
         left) # Left half
             read -r w h <<< "$(ensure_minimum_size $half_w $usable_h)"
-            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            apply_geometry "$id" $usable_x $usable_y $w $h
             ;;
         right) # Right half
             read -r w h <<< "$(ensure_minimum_size $half_w $usable_h)"
-            apply_geometry "$id" $((gap * 2 + half_w)) $((panel_height + gap)) $w $h
+            apply_geometry "$id" $((usable_x + half_w)) $usable_y $w $h
             ;;
         top) # Top half
             read -r w h <<< "$(ensure_minimum_size $usable_w $half_h)"
-            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            apply_geometry "$id" $usable_x $usable_y $w $h
             ;;
         bottom) # Bottom half
             read -r w h <<< "$(ensure_minimum_size $usable_w $half_h)"
-            apply_geometry "$id" $gap $((panel_height + gap * 2 + half_h)) $w $h
+            apply_geometry "$id" $usable_x $((usable_y + half_h)) $w $h
             ;;
         maximize) # Maximize (with gaps)
             read -r w h <<< "$(ensure_minimum_size $usable_w $usable_h)"
-            apply_geometry "$id" $gap $((panel_height + gap)) $w $h
+            apply_geometry "$id" $usable_x $usable_y $w $h
             ;;
         *)
             # Check if it's a saved preset
@@ -839,6 +1121,28 @@ case "${1:-}" in
         # List saved presets
         echo "Available presets:"
         grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
+        ;;
+    monitors)
+        # Show monitor information
+        get_screen_info
+        echo "Screen Resolution: ${SCREEN_W}x${SCREEN_H}"
+        echo "Detected Monitors:"
+        for i in "${!MONITORS[@]}"; do
+            IFS=':' read -r name mx my mw mh <<< "${MONITORS[i]}"
+            echo "  Monitor $((i+1)): $name (${mw}x${mh}+${mx}+${my})"
+            
+            local layout_area=$(get_monitor_layout_area "${MONITORS[i]}")
+            IFS=':' read -r ux uy uw uh <<< "$layout_area"
+            echo "    Usable area: ${uw}x${uh}+${ux}+${uy} (with gaps)"
+        done
+        
+        if [[ ${#MONITORS[@]} -gt 1 ]]; then
+            echo ""
+            echo "Multi-monitor features:"
+            echo "- Windows positioned on their current monitor"
+            echo "- Panel height applied only to primary monitor"
+            echo "- Auto-layout groups windows per monitor"
+        fi
         ;;
     auto)
         # Auto-layout all visible windows
@@ -1044,6 +1348,7 @@ Usage:
   place-window save <name>        Save current window position
   place-window load <name>        Load saved position
   place-window list               List all saved presets
+  place-window monitors           Show monitor information
   place-window config <option>    Configuration commands
   place-window help               Show this help
 
@@ -1104,11 +1409,21 @@ Configuration files:
   Settings: ~/.config/window-positioning/settings.conf
   Presets:  ~/.config/window-positioning/presets.conf
 
+Multi-monitor support:
+  place-window monitors           Show detected monitors and layout areas
+  
+  Multi-monitor behavior:
+  • Windows positioned within their current monitor boundaries
+  • Auto-layout groups and arranges windows per monitor
+  • Panel height applied only to primary monitor (usually leftmost)
+  • All presets (ul, ur, etc.) work within the target monitor
+
 Advanced Features (inspired by xpytile):
   • Simultaneous resize of adjacent windows
   • Master-stack layouts with configurable ratios
   • Geometric focus navigation
   • Auto-layout based on window count
+  • Multi-monitor aware positioning
 EOF
         ;;
     *[0-9]*)
