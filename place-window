@@ -543,24 +543,27 @@ auto_layout_monitor_2_windows() {
     
     case "$layout" in
         equal)
-            # 50/50 split
-            local w=$((usable_w / 2))
+            # 50/50 split with gap between
+            local gap=$GAP
+            local w=$(((usable_w - gap) / 2))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $usable_h
             ;;
         primary-secondary)
-            # 70/30 split
-            local w1=$((usable_w * 70 / 100))
-            local w2=$((usable_w - w1))
+            # 70/30 split with gap between
+            local gap=$GAP
+            local w1=$(((usable_w - gap) * 70 / 100))
+            local w2=$((usable_w - w1 - gap))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $usable_h
             ;;
         secondary-primary)
-            # 30/70 split
-            local w1=$((usable_w * 30 / 100))
-            local w2=$((usable_w - w1))
+            # 30/70 split with gap between
+            local gap=$GAP
+            local w1=$(((usable_w - gap) * 30 / 100))
+            local w2=$((usable_w - w1 - gap))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $usable_h
             ;;
     esac
 }
@@ -574,29 +577,33 @@ auto_layout_monitor_3_windows() {
     
     case "$layout" in
         main-two-side)
-            # One left half, two stacked on right
-            local w1=$((usable_w / 2))
-            local w2=$((usable_w - w1))
-            local h2=$((usable_h / 2))
+            # One left half, two stacked on right with gaps
+            local gap=$GAP
+            local w1=$(((usable_w - gap) / 2))
+            local w2=$((usable_w - w1 - gap))
+            local h2=$(((usable_h - gap) / 2))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $h2
-            apply_geometry "${ids[2]}" $((usable_x + w1)) $((usable_y + h2)) $w2 $h2
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $h2
+            apply_geometry "${ids[2]}" $((usable_x + w1 + gap)) $((usable_y + h2 + gap)) $w2 $h2
             ;;
         three-columns)
-            # Three equal columns
-            local w=$((usable_w / 3))
+            # Three equal columns with gaps
+            local gap=$GAP
+            local w=$(((usable_w - gap * 2) / 3))  # 2 gaps between 3 columns
             apply_geometry "${ids[0]}" $usable_x $usable_y $w $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $usable_h
-            apply_geometry "${ids[2]}" $((usable_x + w * 2)) $usable_y $w $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $usable_h
+            apply_geometry "${ids[2]}" $((usable_x + (w + gap) * 2)) $usable_y $w $usable_h
             ;;
         center-sidebars)
-            # 20/60/20 split
-            local w1=$((usable_w * 20 / 100))
-            local w2=$((usable_w * 60 / 100))
-            local w3=$((usable_w - w1 - w2))
+            # 20/60/20 split with gaps
+            local gap=$GAP
+            local total_gap=$((gap * 2))  # 2 gaps between 3 windows
+            local w1=$(((usable_w - total_gap) * 20 / 100))
+            local w2=$(((usable_w - total_gap) * 60 / 100))
+            local w3=$((usable_w - w1 - w2 - total_gap))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $usable_h
-            apply_geometry "${ids[2]}" $((usable_x + w1 + w2)) $usable_y $w3 $usable_h
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $usable_h
+            apply_geometry "${ids[2]}" $((usable_x + w1 + w2 + total_gap)) $usable_y $w3 $usable_h
             ;;
     esac
 }
@@ -610,35 +617,39 @@ auto_layout_monitor_4_windows() {
     
     case "$layout" in
         grid)
-            # 2x2 grid
-            local w=$((usable_w / 2))
-            local h=$((usable_h / 2))
+            # 2x2 grid with gaps between windows
+            local gap=$GAP
+            local w=$(((usable_w - gap) / 2))  # Account for gap between columns
+            local h=$(((usable_h - gap) / 2))  # Account for gap between rows
             apply_geometry "${ids[0]}" $usable_x $usable_y $w $h
-            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $h
-            apply_geometry "${ids[2]}" $usable_x $((usable_y + h)) $w $h
-            apply_geometry "${ids[3]}" $((usable_x + w)) $((usable_y + h)) $w $h
+            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $h
+            apply_geometry "${ids[2]}" $usable_x $((usable_y + h + gap)) $w $h
+            apply_geometry "${ids[3]}" $((usable_x + w + gap)) $((usable_y + h + gap)) $w $h
             ;;
         main-three-side)
-            # One left half, three stacked on right
-            local w1=$((usable_w / 2))
-            local w2=$((usable_w - w1))
-            local h2=$((usable_h / 3))
+            # One left half, three stacked on right with gaps
+            local gap=$GAP
+            local w1=$(((usable_w - gap) / 2))
+            local w2=$((usable_w - w1 - gap))
+            local h2=$(((usable_h - gap * 2) / 3))  # 2 gaps between 3 stacked windows
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $h2
-            apply_geometry "${ids[2]}" $((usable_x + w1)) $((usable_y + h2)) $w2 $h2
-            apply_geometry "${ids[3]}" $((usable_x + w1)) $((usable_y + h2 * 2)) $w2 $h2
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $h2
+            apply_geometry "${ids[2]}" $((usable_x + w1 + gap)) $((usable_y + h2 + gap)) $w2 $h2
+            apply_geometry "${ids[3]}" $((usable_x + w1 + gap)) $((usable_y + (h2 + gap) * 2)) $w2 $h2
             ;;
         three-top-bottom)
-            # Three columns on top, one wide bottom
-            local h1=$((usable_h * 60 / 100))
-            local h2=$((usable_h - h1))
-            local w1=$((usable_w * 20 / 100))
-            local w2=$((usable_w * 60 / 100))
-            local w3=$((usable_w - w1 - w2))
+            # Three columns on top, one wide bottom with gaps
+            local gap=$GAP
+            local h1=$(((usable_h - gap) * 60 / 100))
+            local h2=$((usable_h - h1 - gap))
+            local total_gap=$((gap * 2))  # 2 gaps between 3 top windows
+            local w1=$(((usable_w - total_gap) * 20 / 100))
+            local w2=$(((usable_w - total_gap) * 60 / 100))
+            local w3=$((usable_w - w1 - w2 - total_gap))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $h1
-            apply_geometry "${ids[1]}" $((usable_x + w1)) $usable_y $w2 $h1
-            apply_geometry "${ids[2]}" $((usable_x + w1 + w2)) $usable_y $w3 $h1
-            apply_geometry "${ids[3]}" $usable_x $((usable_y + h1)) $usable_w $h2
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $h1
+            apply_geometry "${ids[2]}" $((usable_x + w1 + w2 + total_gap)) $usable_y $w3 $h1
+            apply_geometry "${ids[3]}" $usable_x $((usable_y + h1 + gap)) $usable_w $h2
             ;;
     esac
 }
@@ -652,13 +663,14 @@ auto_layout_monitor_5_windows() {
     
     case "$layout" in
         center-corners)
-            # One center, four corners
-            local corner_w=$((usable_w * 30 / 100))
-            local corner_h=$((usable_h * 40 / 100))
-            local center_w=$((usable_w - corner_w * 2))
-            local center_h=$((usable_h - corner_h * 2))
-            local center_x=$((usable_x + corner_w))
-            local center_y=$((usable_y + corner_h))
+            # One center, four corners with gaps
+            local gap=$GAP
+            local corner_w=$(((usable_w - gap * 2) * 30 / 100))
+            local corner_h=$(((usable_h - gap * 2) * 40 / 100))
+            local center_w=$((usable_w - corner_w * 2 - gap * 2))
+            local center_h=$((usable_h - corner_h * 2 - gap * 2))
+            local center_x=$((usable_x + corner_w + gap))
+            local center_y=$((usable_y + corner_h + gap))
             
             # Center window
             apply_geometry "${ids[0]}" $center_x $center_y $center_w $center_h
@@ -669,27 +681,29 @@ auto_layout_monitor_5_windows() {
             apply_geometry "${ids[4]}" $((usable_x + usable_w - corner_w)) $((usable_y + usable_h - corner_h)) $corner_w $corner_h
             ;;
         two-three-columns)
-            # 2 windows on left, 3 on right
-            local w=$((usable_w / 2))
-            local h_left=$((usable_h / 2))
-            local h_right=$((usable_h / 3))
+            # 2 windows on left, 3 on right with gaps
+            local gap=$GAP
+            local w=$(((usable_w - gap) / 2))
+            local h_left=$(((usable_h - gap) / 2))
+            local h_right=$(((usable_h - gap * 2) / 3))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w $h_left
-            apply_geometry "${ids[1]}" $usable_x $((usable_y + h_left)) $w $h_left
-            apply_geometry "${ids[2]}" $((usable_x + w)) $usable_y $w $h_right
-            apply_geometry "${ids[3]}" $((usable_x + w)) $((usable_y + h_right)) $w $h_right
-            apply_geometry "${ids[4]}" $((usable_x + w)) $((usable_y + h_right * 2)) $w $h_right
+            apply_geometry "${ids[1]}" $usable_x $((usable_y + h_left + gap)) $w $h_left
+            apply_geometry "${ids[2]}" $((usable_x + w + gap)) $usable_y $w $h_right
+            apply_geometry "${ids[3]}" $((usable_x + w + gap)) $((usable_y + h_right + gap)) $w $h_right
+            apply_geometry "${ids[4]}" $((usable_x + w + gap)) $((usable_y + (h_right + gap) * 2)) $w $h_right
             ;;
         grid-wide-bottom)
-            # 2x2 grid on top, one wide on bottom
-            local h1=$((usable_h * 60 / 100))
-            local h2=$((usable_h - h1))
-            local w=$((usable_w / 2))
-            local h_grid=$((h1 / 2))
+            # 2x2 grid on top, one wide on bottom with gaps
+            local gap=$GAP
+            local h1=$(((usable_h - gap * 2) * 60 / 100))  # Account for gaps above and below grid
+            local h2=$((usable_h - h1 - gap))
+            local w=$(((usable_w - gap) / 2))
+            local h_grid=$(((h1 - gap) / 2))  # Gap between grid rows
             apply_geometry "${ids[0]}" $usable_x $usable_y $w $h_grid
-            apply_geometry "${ids[1]}" $((usable_x + w)) $usable_y $w $h_grid
-            apply_geometry "${ids[2]}" $usable_x $((usable_y + h_grid)) $w $h_grid
-            apply_geometry "${ids[3]}" $((usable_x + w)) $((usable_y + h_grid)) $w $h_grid
-            apply_geometry "${ids[4]}" $usable_x $((usable_y + h1)) $usable_w $h2
+            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $h_grid
+            apply_geometry "${ids[2]}" $usable_x $((usable_y + h_grid + gap)) $w $h_grid
+            apply_geometry "${ids[3]}" $((usable_x + w + gap)) $((usable_y + h_grid + gap)) $w $h_grid
+            apply_geometry "${ids[4]}" $usable_x $((usable_y + h1 + gap)) $usable_w $h2
             ;;
     esac
 }
