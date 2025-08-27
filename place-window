@@ -226,8 +226,8 @@ get_monitor_layout_area() {
             # Panel auto-hides on this monitor - start at top but reserve panel space in height
             usable_h=$((mh - panel_height - gap * 2))
         else
-            # No panel on this monitor - use gaps plus extra bottom margin
-            usable_h=$((mh - gap * 3))
+            # No panel on this monitor - use gaps plus much larger bottom margin
+            usable_h=$((mh - gap * 6))
         fi
     else
         # Panel reserves space - subtract panel height from available height
@@ -237,8 +237,8 @@ get_monitor_layout_area() {
             usable_y=$((my + panel_height + gap))
             usable_h=$((mh - panel_height - gap * 2))
         else
-            # No panel on this monitor - use gaps plus extra bottom margin  
-            usable_h=$((mh - gap * 3))
+            # No panel on this monitor - use gaps plus much larger bottom margin  
+            usable_h=$((mh - gap * 6))
         fi
     fi
     
@@ -605,14 +605,15 @@ auto_layout_monitor_3_windows() {
     
     case "$layout" in
         main-two-side)
-            # One left half, two stacked on right with gaps
+            # One left half, two stacked on right with proper gaps
             local gap=$GAP
             local w1=$(((usable_w - gap) / 2))
             local w2=$((usable_w - w1 - gap))
-            local h2=$(((usable_h - gap) / 2))
+            # Right side with balanced height and proper separation
+            local h2=$(((usable_h - gap * 6) / 2))
             apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $h2
-            apply_geometry "${ids[2]}" $((usable_x + w1 + gap)) $((usable_y + h2 + gap)) $w2 $h2
+            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $((usable_y + gap)) $w2 $h2
+            apply_geometry "${ids[2]}" $((usable_x + w1 + gap)) $((usable_y + gap + h2 + gap * 4)) $w2 $h2
             ;;
         three-columns)
             # Three equal columns with gaps
