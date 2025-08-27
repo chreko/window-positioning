@@ -220,8 +220,15 @@ get_monitor_layout_area() {
     
     # Handle panel height in usable_h calculation
     if [[ "$panel_autohide" == "true" ]]; then
-        # Panel auto-hides - use full monitor height (windows can overlap panel area)
-        usable_h=$((mh - gap * 2))
+        # Panel auto-hides but still takes space - start at top but reduce height
+        # Only apply panel height on primary monitor (usually the one containing 0,0)
+        if [[ $mx -eq 0 && $my -eq 0 ]]; then
+            # Panel auto-hides on this monitor - start at top but reserve panel space in height
+            usable_h=$((mh - panel_height - gap * 2))
+        else
+            # No panel on this monitor
+            usable_h=$((mh - gap * 2))
+        fi
     else
         # Panel reserves space - subtract panel height from available height
         # Only apply panel height on primary monitor (usually the one containing 0,0)
