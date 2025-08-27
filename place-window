@@ -30,6 +30,20 @@ PANEL_HEIGHT=32
 # Minimum window size
 MIN_WIDTH=400
 MIN_HEIGHT=300
+
+# Auto-layout preferences
+# Available layouts for each window count:
+# 1 window: maximize
+# 2 windows: equal, primary-secondary, secondary-primary
+# 3 windows: main-two-side, three-columns, center-sidebars
+# 4 windows: grid, main-three-side, three-top-bottom
+# 5 windows: center-corners, two-three-columns, grid-wide-bottom
+
+AUTO_LAYOUT_1="maximize"
+AUTO_LAYOUT_2="equal"
+AUTO_LAYOUT_3="main-two-side"
+AUTO_LAYOUT_4="grid"
+AUTO_LAYOUT_5="grid-wide-bottom"
 EOF
 fi
 
@@ -130,6 +144,270 @@ ensure_minimum_size() {
     w=$((w < MIN_WIDTH ? MIN_WIDTH : w))
     h=$((h < MIN_HEIGHT ? MIN_HEIGHT : h))
     echo "$w $h"
+}
+
+# Function to get all visible windows (not minimized or maximized)
+get_visible_windows() {
+    local current_desktop=$(xdotool get_desktop)
+    wmctrl -l | while read -r line; do
+        local id=$(echo "$line" | awk '{print $1}')
+        local desktop=$(echo "$line" | awk '{print $2}')
+        
+        # Skip windows not on current desktop
+        [[ "$desktop" != "$current_desktop" && "$desktop" != "-1" ]] && continue
+        
+        # Check if window is minimized or maximized
+        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED")
+        [[ -n "$state" ]] && continue
+        
+        # Skip panels, docks, and desktop
+        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            continue
+        fi
+        
+        echo "$id"
+    done
+}
+
+# Auto-layout functions for different window counts
+auto_layout_1_window() {
+    local id="$1"
+    get_screen_info
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    local usable_w=$((SCREEN_W - gap * 2))
+    local usable_h=$((SCREEN_H - panel_height - gap * 2))
+    
+    # Maximize with gaps
+    apply_geometry "$id" $gap $((panel_height + gap)) $usable_w $usable_h
+}
+
+auto_layout_2_windows() {
+    local layout="$1"
+    shift
+    local ids=("$@")
+    get_screen_info
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    local usable_w=$((SCREEN_W - gap * 3))
+    local usable_h=$((SCREEN_H - panel_height - gap * 2))
+    
+    case "$layout" in
+        equal)
+            # 50/50 split
+            local w=$((usable_w / 2))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $usable_h
+            ;;
+        primary-secondary)
+            # 70/30 split
+            local w1=$((usable_w * 70 / 100))
+            local w2=$((usable_w - w1))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $usable_h
+            ;;
+        secondary-primary)
+            # 30/70 split
+            local w1=$((usable_w * 30 / 100))
+            local w2=$((usable_w - w1))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $usable_h
+            ;;
+    esac
+}
+
+auto_layout_3_windows() {
+    local layout="$1"
+    shift
+    local ids=("$@")
+    get_screen_info
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    local usable_w=$((SCREEN_W - gap * 4))
+    local usable_h=$((SCREEN_H - panel_height - gap * 2))
+    
+    case "$layout" in
+        main-two-side)
+            # One left half, two stacked on right
+            local w1=$((usable_w / 2))
+            local w2=$((usable_w - w1))
+            local h2=$((usable_h / 2))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $((h2 - gap / 2))
+            apply_geometry "${ids[2]}" $((gap * 2 + w1)) $((panel_height + gap * 2 + h2)) $w2 $((h2 - gap / 2))
+            ;;
+        three-columns)
+            # Three equal columns
+            local w=$((usable_w / 3))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $usable_h
+            apply_geometry "${ids[2]}" $((gap * 3 + w * 2)) $((panel_height + gap)) $w $usable_h
+            ;;
+        center-sidebars)
+            # 20/60/20 split
+            local w1=$((usable_w * 20 / 100))
+            local w2=$((usable_w * 60 / 100))
+            local w3=$((usable_w - w1 - w2))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $usable_h
+            apply_geometry "${ids[2]}" $((gap * 3 + w1 + w2)) $((panel_height + gap)) $w3 $usable_h
+            ;;
+    esac
+}
+
+auto_layout_4_windows() {
+    local layout="$1"
+    shift
+    local ids=("$@")
+    get_screen_info
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    
+    case "$layout" in
+        grid)
+            # 2x2 grid
+            local usable_w=$((SCREEN_W - gap * 3))
+            local usable_h=$((SCREEN_H - panel_height - gap * 3))
+            local w=$((usable_w / 2))
+            local h=$((usable_h / 2))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $h
+            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $h
+            apply_geometry "${ids[2]}" $gap $((panel_height + gap * 2 + h)) $w $h
+            apply_geometry "${ids[3]}" $((gap * 2 + w)) $((panel_height + gap * 2 + h)) $w $h
+            ;;
+        main-three-side)
+            # One left half, three stacked on right
+            local usable_w=$((SCREEN_W - gap * 3))
+            local usable_h=$((SCREEN_H - panel_height - gap * 2))
+            local w1=$((usable_w / 2))
+            local w2=$((usable_w - w1))
+            local h2=$((usable_h / 3))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
+            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $((h2 - gap * 2 / 3))
+            apply_geometry "${ids[2]}" $((gap * 2 + w1)) $((panel_height + gap + h2 + gap / 3)) $w2 $((h2 - gap * 2 / 3))
+            apply_geometry "${ids[3]}" $((gap * 2 + w1)) $((panel_height + gap + h2 * 2 + gap * 2 / 3)) $w2 $((h2 - gap * 2 / 3))
+            ;;
+        three-top-bottom)
+            # Three columns on top, one wide bottom (like 3-window center-sidebars + bottom bar)
+            local usable_w=$((SCREEN_W - gap * 4))
+            local usable_h=$((SCREEN_H - panel_height - gap * 3))
+            local h1=$((usable_h * 60 / 100))
+            local h2=$((usable_h - h1))
+            local w1=$((usable_w * 20 / 100))
+            local w2=$((usable_w * 60 / 100))
+            local w3=$((usable_w - w1 - w2))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $h1
+            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $h1
+            apply_geometry "${ids[2]}" $((gap * 3 + w1 + w2)) $((panel_height + gap)) $w3 $h1
+            apply_geometry "${ids[3]}" $gap $((panel_height + gap * 2 + h1)) $((SCREEN_W - gap * 2)) $h2
+            ;;
+    esac
+}
+
+auto_layout_5_windows() {
+    local layout="$1"
+    shift
+    local ids=("$@")
+    get_screen_info
+    local gap=$GAP
+    local panel_height=$PANEL_HEIGHT
+    local usable_w=$((SCREEN_W - gap * 3))
+    local usable_h=$((SCREEN_H - panel_height - gap * 3))
+    
+    case "$layout" in
+        center-corners)
+            # One center, four corners
+            local corner_w=$((usable_w * 30 / 100))
+            local corner_h=$((usable_h * 40 / 100))
+            local center_w=$((usable_w - corner_w * 2 - gap * 2))
+            local center_h=$((usable_h - corner_h * 2 - gap * 2))
+            local center_x=$((gap + corner_w + gap))
+            local center_y=$((panel_height + gap + corner_h + gap))
+            
+            # Center window
+            apply_geometry "${ids[0]}" $center_x $center_y $center_w $center_h
+            # Corners
+            apply_geometry "${ids[1]}" $gap $((panel_height + gap)) $corner_w $corner_h
+            apply_geometry "${ids[2]}" $((SCREEN_W - gap - corner_w)) $((panel_height + gap)) $corner_w $corner_h
+            apply_geometry "${ids[3]}" $gap $((SCREEN_H - gap - corner_h)) $corner_w $corner_h
+            apply_geometry "${ids[4]}" $((SCREEN_W - gap - corner_w)) $((SCREEN_H - gap - corner_h)) $corner_w $corner_h
+            ;;
+        two-three-columns)
+            # 2 windows on left, 3 on right
+            local w=$((usable_w / 2))
+            local h_left=$((usable_h / 2))
+            local h_right=$((usable_h / 3))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $((h_left - gap / 2))
+            apply_geometry "${ids[1]}" $gap $((panel_height + gap * 2 + h_left)) $w $((h_left - gap / 2))
+            apply_geometry "${ids[2]}" $((gap * 2 + w)) $((panel_height + gap)) $w $((h_right - gap * 2 / 3))
+            apply_geometry "${ids[3]}" $((gap * 2 + w)) $((panel_height + gap + h_right + gap / 3)) $w $((h_right - gap * 2 / 3))
+            apply_geometry "${ids[4]}" $((gap * 2 + w)) $((panel_height + gap + h_right * 2 + gap * 2 / 3)) $w $((h_right - gap * 2 / 3))
+            ;;
+        grid-wide-bottom)
+            # 2x2 grid on top, one wide on bottom
+            local h1=$((usable_h * 60 / 100))
+            local h2=$((usable_h - h1 - gap))
+            local w=$((usable_w / 2))
+            local h_grid=$((h1 / 2))
+            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $((h_grid - gap / 2))
+            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $((h_grid - gap / 2))
+            apply_geometry "${ids[2]}" $gap $((panel_height + gap + h_grid + gap / 2)) $w $((h_grid - gap / 2))
+            apply_geometry "${ids[3]}" $((gap * 2 + w)) $((panel_height + gap + h_grid + gap / 2)) $w $((h_grid - gap / 2))
+            apply_geometry "${ids[4]}" $gap $((panel_height + gap * 2 + h1)) $((SCREEN_W - gap * 2)) $h2
+            ;;
+    esac
+}
+
+# Main auto-layout function
+auto_layout() {
+    echo "Detecting visible windows..."
+    local windows=($(get_visible_windows))
+    local count=${#windows[@]}
+    
+    if [[ $count -eq 0 ]]; then
+        echo "No visible windows found"
+        return 1
+    fi
+    
+    echo "Found $count visible window(s)"
+    
+    # Load auto-layout preferences
+    source "$SETTINGS_FILE"
+    
+    case $count in
+        1)
+            echo "Applying layout: ${AUTO_LAYOUT_1:-maximize}"
+            auto_layout_1_window "${windows[0]}"
+            ;;
+        2)
+            local layout="${AUTO_LAYOUT_2:-equal}"
+            echo "Applying 2-window layout: $layout"
+            auto_layout_2_windows "$layout" "${windows[@]}"
+            ;;
+        3)
+            local layout="${AUTO_LAYOUT_3:-main-two-side}"
+            echo "Applying 3-window layout: $layout"
+            auto_layout_3_windows "$layout" "${windows[@]}"
+            ;;
+        4)
+            local layout="${AUTO_LAYOUT_4:-grid}"
+            echo "Applying 4-window layout: $layout"
+            auto_layout_4_windows "$layout" "${windows[@]}"
+            ;;
+        5)
+            local layout="${AUTO_LAYOUT_5:-grid-wide-bottom}"
+            echo "Applying 5-window layout: $layout"
+            auto_layout_5_windows "$layout" "${windows[@]}"
+            ;;
+        *)
+            echo "Auto-layout supports 1-5 windows. Found $count windows."
+            echo "Consider manually arranging or closing some windows."
+            return 1
+            ;;
+    esac
+    
+    echo "Auto-layout applied successfully"
 }
 
 # Apply preset layouts with configurable gaps
@@ -331,6 +609,90 @@ case "${1:-}" in
         echo "Available presets:"
         grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
         ;;
+    auto)
+        # Auto-layout all visible windows
+        auto_layout
+        ;;
+    auto-config)
+        # Configure auto-layout preferences
+        case "${2:-}" in
+            1|2|3|4|5)
+                local window_count="$2"
+                local layout="${3:-}"
+                case $window_count in
+                    1)
+                        if [[ -z "$layout" ]]; then
+                            echo "Current 1-window layout: ${AUTO_LAYOUT_1:-maximize}"
+                            echo "Available: maximize"
+                        else
+                            sed -i "s/^AUTO_LAYOUT_1=.*/AUTO_LAYOUT_1=\"$layout\"/" "$SETTINGS_FILE"
+                            echo "1-window layout set to: $layout"
+                        fi
+                        ;;
+                    2)
+                        if [[ -z "$layout" ]]; then
+                            echo "Current 2-window layout: ${AUTO_LAYOUT_2:-equal}"
+                            echo "Available: equal, primary-secondary, secondary-primary"
+                        else
+                            sed -i "s/^AUTO_LAYOUT_2=.*/AUTO_LAYOUT_2=\"$layout\"/" "$SETTINGS_FILE"
+                            echo "2-window layout set to: $layout"
+                        fi
+                        ;;
+                    3)
+                        if [[ -z "$layout" ]]; then
+                            echo "Current 3-window layout: ${AUTO_LAYOUT_3:-main-two-side}"
+                            echo "Available: main-two-side, three-columns, center-sidebars"
+                        else
+                            sed -i "s/^AUTO_LAYOUT_3=.*/AUTO_LAYOUT_3=\"$layout\"/" "$SETTINGS_FILE"
+                            echo "3-window layout set to: $layout"
+                        fi
+                        ;;
+                    4)
+                        if [[ -z "$layout" ]]; then
+                            echo "Current 4-window layout: ${AUTO_LAYOUT_4:-grid}"
+                            echo "Available: grid, main-three-side, three-top-bottom"
+                        else
+                            sed -i "s/^AUTO_LAYOUT_4=.*/AUTO_LAYOUT_4=\"$layout\"/" "$SETTINGS_FILE"
+                            echo "4-window layout set to: $layout"
+                        fi
+                        ;;
+                    5)
+                        if [[ -z "$layout" ]]; then
+                            echo "Current 5-window layout: ${AUTO_LAYOUT_5:-grid-wide-bottom}"
+                            echo "Available: center-corners, two-three-columns, grid-wide-bottom"
+                        else
+                            sed -i "s/^AUTO_LAYOUT_5=.*/AUTO_LAYOUT_5=\"$layout\"/" "$SETTINGS_FILE"
+                            echo "5-window layout set to: $layout"
+                        fi
+                        ;;
+                esac
+                ;;
+            show)
+                echo "Auto-layout preferences:"
+                echo "  1 window:  ${AUTO_LAYOUT_1:-maximize}"
+                echo "  2 windows: ${AUTO_LAYOUT_2:-equal}"
+                echo "  3 windows: ${AUTO_LAYOUT_3:-main-two-side}"
+                echo "  4 windows: ${AUTO_LAYOUT_4:-grid}"
+                echo "  5 windows: ${AUTO_LAYOUT_5:-grid-wide-bottom}"
+                ;;
+            *)
+                echo "Auto-layout configuration:"
+                echo "  place-window auto-config show              Show current preferences"
+                echo "  place-window auto-config 1 [layout]        Set/show 1-window layout"
+                echo "  place-window auto-config 2 [layout]        Set/show 2-window layout"
+                echo "  place-window auto-config 3 [layout]        Set/show 3-window layout"
+                echo "  place-window auto-config 4 [layout]        Set/show 4-window layout"
+                echo "  place-window auto-config 5 [layout]        Set/show 5-window layout"
+                echo ""
+                echo "Available layouts:"
+                echo "  1 window:  maximize"
+                echo "  2 windows: equal, primary-secondary, secondary-primary"
+                echo "  3 windows: main-two-side, three-columns, center-sidebars"
+                echo "  4 windows: grid, main-three-side, three-top-bottom"
+                echo "  5 windows: center-corners, two-three-columns, grid-wide-bottom"
+                ;;
+        esac
+        ;;
     config)
         # Configuration commands
         case "${2:-}" in
@@ -367,6 +729,13 @@ case "${1:-}" in
                 echo "  Min window width: ${MIN_WIDTH}px"
                 echo "  Min window height: ${MIN_HEIGHT}px"
                 echo ""
+                echo "Auto-layout preferences:"
+                echo "  1 window:  ${AUTO_LAYOUT_1:-maximize}"
+                echo "  2 windows: ${AUTO_LAYOUT_2:-equal}"
+                echo "  3 windows: ${AUTO_LAYOUT_3:-main-two-side}"
+                echo "  4 windows: ${AUTO_LAYOUT_4:-grid}"
+                echo "  5 windows: ${AUTO_LAYOUT_5:-grid-wide-bottom}"
+                echo ""
                 echo "Configuration file: $SETTINGS_FILE"
                 ;;
             *)
@@ -385,6 +754,8 @@ Usage:
   place-window                    Interactive mode
   place-window ul|ur|ll|lr|c      Quick corner/center presets
   place-window left|right|top|bottom|maximize  Half-screen presets
+  place-window auto               Auto-layout all visible windows
+  place-window auto-config <N> [layout]  Configure auto-layout preferences
   place-window <X> <Y> <W> <H>    Custom geometry
   place-window ws <N>             Move to workspace N (0-based)
   place-window save <name>        Save current window position
@@ -400,6 +771,18 @@ Quick presets (with configurable gaps):
   lr - Lower right quarter   bottom - Bottom half
   c  - Center                maximize - Maximize with gaps
 
+Auto-layout:
+  place-window auto                   Arrange all visible windows automatically
+  place-window auto-config show       Show current auto-layout preferences
+  place-window auto-config 2 equal    Set 2-window layout to equal split
+  
+  Available auto-layouts:
+    1 window:  maximize
+    2 windows: equal, primary-secondary, secondary-primary
+    3 windows: main-two-side, three-columns, center-sidebars
+    4 windows: grid, main-three-side, three-top-bottom
+    5 windows: center-corners, two-three-columns, grid-wide-bottom
+
 Configuration commands:
   place-window config gap [SIZE]     Set or show gap size (default: 10px)
   place-window config panel [SIZE]   Set or show panel height (default: 32px)
@@ -407,18 +790,18 @@ Configuration commands:
 
 Examples:
   place-window                    # Interactive menu
+  place-window auto               # Auto-arrange all visible windows
   place-window ur                 # Place in upper right with gaps
+  place-window auto-config 2 primary-secondary  # 70/30 split for 2 windows
   place-window config gap 15      # Set 15px gaps around windows
-  place-window config panel 40    # Set panel height to 40px
   place-window 100 50 800 600     # Custom position (ignores gaps)
   place-window save browser-work  # Save position as "browser-work"
-  place-window load browser-work  # Restore saved position
 
 Gap behavior:
   - All preset layouts maintain the configured gap around windows
   - Gaps are applied: left, right, top, bottom, and between windows
   - Custom coordinates ignore gaps and use exact positioning
-  - Minimum window sizes are enforced to prevent too-small windows
+  - Auto-layout respects gap settings for all arrangements
 
 Configuration files:
   Settings: ~/.config/window-positioning/settings.conf

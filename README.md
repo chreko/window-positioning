@@ -1,9 +1,10 @@
 # Window Positioning Tool for Qubes OS
 
-A powerful window positioning tool designed specifically for Qubes OS dom0 that allows you to select windows with your mouse and position them using presets or custom coordinates.
+A powerful window positioning tool designed specifically for Qubes OS dom0 that allows you to select windows with your mouse and position them using presets or custom coordinates, or automatically arrange all visible windows.
 
 ## Features
 
+- **Auto-Layout**: Automatically arrange all visible windows based on their count (1-5 windows)
 - **Interactive Mode**: Click-to-select windows with a user-friendly menu
 - **Configurable Gaps**: Set custom pixel gaps around all windows (default: 10px)
 - **Quick Presets**: Position windows in common layouts with automatic gap handling
@@ -71,6 +72,28 @@ place-window load mypreset     # Load saved position
 place-window list              # List all saved presets
 ```
 
+### Auto-Layout
+```bash
+place-window auto              # Auto-arrange all visible windows
+```
+Automatically arranges all non-minimized, non-maximized windows on the current workspace.
+Layouts adapt based on window count (1-5 windows supported).
+
+### Auto-Layout Configuration
+```bash
+place-window auto-config show              # Show current preferences
+place-window auto-config 2 equal           # Set 2-window layout to equal split
+place-window auto-config 2 primary-secondary  # Set to 70/30 split
+place-window auto-config 3 three-columns   # Set 3-window layout to columns
+```
+
+**Available Auto-Layouts:**
+- **1 window:** maximize
+- **2 windows:** equal (50/50), primary-secondary (70/30), secondary-primary (30/70)
+- **3 windows:** main-two-side, three-columns, center-sidebars (20/60/20)
+- **4 windows:** grid (2x2), main-three-side, three-top-bottom
+- **5 windows:** center-corners, two-three-columns, grid-wide-bottom
+
 ### Gap Configuration
 ```bash
 place-window config gap 15     # Set 15px gaps around windows
@@ -86,6 +109,7 @@ Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcu
 | Command | Suggested Key | Description |
 |---------|---------------|-------------|
 | `place-window` | `Super+Shift+P` | Interactive mode |
+| `place-window auto` | `Super+Shift+A` | Auto-layout all windows |
 | `place-window ul` | `Super+Shift+1` | Upper left |
 | `place-window ur` | `Super+Shift+2` | Upper right |
 | `place-window left` | `Super+Shift+Left` | Left half |
@@ -108,6 +132,13 @@ PANEL_HEIGHT=32
 # Minimum window size
 MIN_WIDTH=400
 MIN_HEIGHT=300
+
+# Auto-layout preferences
+AUTO_LAYOUT_1="maximize"
+AUTO_LAYOUT_2="equal"
+AUTO_LAYOUT_3="main-two-side"
+AUTO_LAYOUT_4="grid"
+AUTO_LAYOUT_5="grid-wide-bottom"
 ```
 
 ### Window Presets
@@ -124,24 +155,46 @@ terminal-dev=1220,570,700,510
 - All preset layouts automatically apply the configured gap
 - Gaps are maintained around window edges and between windows
 - Custom coordinate positioning ignores gaps for precise control
+- Auto-layout respects gap settings for all window arrangements
 - Interactive mode shows current gap settings and allows real-time changes
 
 ## Examples
 
 ### Common Workflows
 
+**Quick auto-arrangement:**
+```bash
+# Have multiple windows open, then:
+place-window auto    # Automatically arranges all visible windows
+```
+
 **Side-by-side browsing:**
 ```bash
 # Open two browser windows, then:
 place-window left    # First window
 place-window right   # Second window
+# Or simply:
+place-window auto    # Auto-arranges both windows
 ```
 
 **Development layout:**
 ```bash
+# Open editor, browser, and terminal, then:
+place-window auto    # Auto-arranges all 3 windows
+# Or manually:
 place-window load ide-main      # Main editor
 place-window load browser-dev   # Browser for testing
 place-window load terminal-dev  # Terminal
+```
+
+**Customize auto-layout for your workflow:**
+```bash
+# Prefer 70/30 split for 2 windows:
+place-window auto-config 2 primary-secondary
+# Prefer 3 columns for 3 windows:
+place-window auto-config 3 three-columns
+# Now auto-layout uses your preferences:
+place-window auto
 ```
 
 **Save your current layout:**
