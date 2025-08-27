@@ -69,7 +69,13 @@ if [[ ! -f "$CONFIG_DIR/settings.conf" ]]; then
 GAP=10
 
 # Panel height (adjust for your XFCE theme)
+# Set to 0 if panel auto-hides or doesn't reserve space
 PANEL_HEIGHT=32
+
+# Panel auto-hide mode
+# Set to true if panel is set to auto-hide (intelligently or always)
+# When true, panel height is ignored for layout calculations
+PANEL_AUTOHIDE=false
 
 # Minimum window size
 MIN_WIDTH=400

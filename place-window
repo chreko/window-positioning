@@ -25,7 +25,13 @@ if [[ ! -f "$SETTINGS_FILE" ]]; then
 GAP=10
 
 # Panel height (adjust for your XFCE theme)
+# Set to 0 if panel auto-hides or doesn't reserve space
 PANEL_HEIGHT=32
+
+# Panel auto-hide mode
+# Set to true if panel is set to auto-hide (intelligently or always)
+# When true, panel height is ignored for layout calculations
+PANEL_AUTOHIDE=false
 
 # Minimum window size
 MIN_WIDTH=400
@@ -67,6 +73,7 @@ source "$SETTINGS_FILE"
 # Set defaults if not in config
 GAP=${GAP:-10}
 PANEL_HEIGHT=${PANEL_HEIGHT:-32}
+PANEL_AUTOHIDE=${PANEL_AUTOHIDE:-false}
 MIN_WIDTH=${MIN_WIDTH:-400}
 MIN_HEIGHT=${MIN_HEIGHT:-300}
 
@@ -202,11 +209,15 @@ get_monitor_layout_area() {
     
     local gap=$GAP
     local panel_height=$PANEL_HEIGHT
+    local panel_autohide="${PANEL_AUTOHIDE:-false}"
     
-    # Adjust for panel only on primary monitor (usually the one containing 0,0)
+    # Adjust for panel only if it reserves space (not auto-hiding)
     local effective_panel_height=0
-    if [[ $mx -eq 0 && $my -eq 0 ]]; then
-        effective_panel_height=$panel_height
+    if [[ "$panel_autohide" != "true" ]]; then
+        # Only apply panel height on primary monitor (usually the one containing 0,0)
+        if [[ $mx -eq 0 && $my -eq 0 ]]; then
+            effective_panel_height=$panel_height
+        fi
     fi
     
     local usable_x=$((mx + gap))
@@ -1320,10 +1331,29 @@ case "${1:-}" in
                     echo "Current panel height: ${PANEL_HEIGHT}px"
                 fi
                 ;;
+            autohide)
+                if [[ -n "${3:-}" ]]; then
+                    if [[ "$3" == "true" || "$3" == "false" ]]; then
+                        sed -i "s/^PANEL_AUTOHIDE=.*/PANEL_AUTOHIDE=$3/" "$SETTINGS_FILE"
+                        echo "Panel auto-hide set to: $3"
+                        if [[ "$3" == "true" ]]; then
+                            echo "Panel height will be ignored for layout calculations"
+                        else
+                            echo "Panel height (${PANEL_HEIGHT}px) will be reserved at top"
+                        fi
+                    else
+                        echo "Error: Panel auto-hide must be 'true' or 'false'"
+                        exit 1
+                    fi
+                else
+                    echo "Panel auto-hide mode: ${PANEL_AUTOHIDE}"
+                fi
+                ;;
             show)
                 echo "Current settings:"
                 echo "  Gap: ${GAP}px"
                 echo "  Panel height: ${PANEL_HEIGHT}px"
+                echo "  Panel auto-hide: ${PANEL_AUTOHIDE}"
                 echo "  Min window width: ${MIN_WIDTH}px"
                 echo "  Min window height: ${MIN_HEIGHT}px"
                 echo ""
@@ -1340,6 +1370,7 @@ case "${1:-}" in
                 echo "Configuration commands:"
                 echo "  place-window config gap [SIZE]     Set or show gap size"
                 echo "  place-window config panel [SIZE]   Set or show panel height"
+                echo "  place-window config autohide [true/false]  Set panel auto-hide mode"
                 echo "  place-window config show           Show all settings"
                 ;;
         esac
@@ -1402,6 +1433,7 @@ Focus navigation:
 Configuration commands:
   place-window config gap [SIZE]     Set or show gap size (default: 10px)
   place-window config panel [SIZE]   Set or show panel height (default: 32px)
+  place-window config autohide [true/false]  Panel auto-hide mode
   place-window config show           Show all current settings
 
 Examples:
