@@ -1895,13 +1895,36 @@ apply_meta_center_sidebar() {
         echo "Monitor $name: Center-sidebar-$center_width_percent with $num_windows window(s)"
         
         if [[ $num_windows -eq 1 ]]; then
-            # Only one window - center it
+            # Only one window - maximize it (like main-sidebar does)
             local layout_area=$(get_monitor_layout_area "$monitor")
             IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
             local gap=$GAP
-            local center_w=$((usable_w * center_width_percent / 100))
-            local center_x=$((usable_x + (usable_w - center_w) / 2))
-            apply_geometry "${window_list[0]}" $center_x $((usable_y + gap)) $center_w $((usable_h - gap * 2))
+            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2))
+            continue
+        fi
+        
+        if [[ $num_windows -eq 2 ]]; then
+            # Two windows - behave exactly like main-sidebar (main left, sidebar right)
+            local layout_area=$(get_monitor_layout_area "$monitor")
+            IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+            
+            local gap=$GAP
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 2))
+            local final_h=$((usable_h - gap * 2))
+            
+            # Use same logic as main-sidebar: main window at 75% width, sidebar takes rest
+            local available_w=$((final_w - gap * 2))  # Use 2x gap between main and sidebar (reasonable)
+            local main_w=$((available_w * 75 / 100))
+            local sidebar_w=$((available_w - main_w))
+            local sidebar_x=$((final_x + main_w + gap * 2))
+            
+            # Position main window (first window)
+            apply_geometry "${window_list[0]}" $final_x $final_y $main_w $final_h
+            
+            # Position sidebar window (second window) - full height on right
+            apply_geometry "${window_list[1]}" $sidebar_x $final_y $sidebar_w $final_h
             continue
         fi
         
