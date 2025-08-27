@@ -4,6 +4,7 @@ A powerful window positioning tool designed specifically for Qubes OS dom0 that 
 
 ## Features
 
+- **Watch Mode**: Automatic tiling daemon that monitors and tiles new windows as they appear
 - **Multi-Monitor Support**: Automatically detects and works with multiple monitors
 - **Auto-Layout**: Automatically arrange all visible windows based on their count (1-5 windows)
 - **Simultaneous Resize**: Resize windows while automatically adjusting adjacent windows (xpytile-inspired)
@@ -102,6 +103,31 @@ place-window auto-config 3 three-columns   # Set 3-window layout to columns
 - **4 windows:** grid (2x2), main-three-side, three-top-bottom
 - **5 windows:** center-corners, two-three-columns, grid-wide-bottom
 
+### Watch Mode (Automatic Tiling)
+```bash
+place-window watch start        # Start automatic tiling daemon
+place-window watch stop         # Stop the daemon  
+place-window watch status       # Check daemon status
+```
+Watch mode runs in the background and automatically applies auto-layout whenever new windows appear or existing windows close. Perfect for maintaining optimal layouts without manual intervention.
+
+**Features:**
+- Monitors window creation/destruction events
+- Automatically applies configured auto-layout preferences
+- Runs as background daemon until stopped
+- Works with multi-monitor setups
+- Respects all gap and panel settings
+
+**Usage:**
+```bash
+# Start watch mode and let it run
+place-window watch start
+
+# In another terminal, open applications - they'll be auto-tiled
+# Stop when done
+place-window watch stop
+```
+
 ### Master-Stack Layouts
 ```bash
 place-window master vertical    # Master left (60%), stack right (40%)
@@ -161,6 +187,7 @@ Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcu
 |---------|---------------|-------------|
 | `place-window` | `Super+Shift+P` | Interactive mode |
 | `place-window auto` | `Super+Shift+A` | Auto-layout all windows |
+| `place-window watch start` | `Super+Shift+W` | Start watch mode daemon |
 | `place-window master vertical` | `Super+Shift+M` | Master-stack vertical |
 | `place-window focus right` | `Super+Shift+Right` | Focus right window |
 | `place-window focus left` | `Super+Shift+Left` | Focus left window |

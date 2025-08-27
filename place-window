@@ -1104,6 +1104,378 @@ interactive_mode() {
     esac
 }
 
+# Window swap functions
+drag_swap_windows() {
+    echo "Click on the first window to select it for swapping..."
+    local window1_id
+    window1_id=$(pick_window)
+    
+    if [[ -z "$window1_id" ]]; then
+        echo "No window selected. Aborting swap."
+        return 1
+    fi
+    
+    # Get first window's geometry and info
+    local window1_geom
+    window1_geom=$(xdotool getwindowgeometry --shell "$window1_id" 2>/dev/null)
+    local window1_title
+    window1_title=$(xdotool getwindowname "$window1_id" 2>/dev/null)
+    
+    if [[ -z "$window1_geom" ]]; then
+        echo "Error: Could not get geometry for selected window"
+        return 1
+    fi
+    
+    echo "Selected: $window1_title"
+    echo "Now click on the second window to swap with..."
+    
+    local window2_id
+    window2_id=$(pick_window)
+    
+    if [[ -z "$window2_id" ]]; then
+        echo "No second window selected. Aborting swap."
+        return 1
+    fi
+    
+    if [[ "$window1_id" == "$window2_id" ]]; then
+        echo "Cannot swap a window with itself"
+        return 1
+    fi
+    
+    # Get second window's geometry and info
+    local window2_geom
+    window2_geom=$(xdotool getwindowgeometry --shell "$window2_id" 2>/dev/null)
+    local window2_title
+    window2_title=$(xdotool getwindowname "$window2_id" 2>/dev/null)
+    
+    if [[ -z "$window2_geom" ]]; then
+        echo "Error: Could not get geometry for second window"
+        return 1
+    fi
+    
+    echo "Swapping positions between:"
+    echo "  Window 1: $window1_title"
+    echo "  Window 2: $window2_title"
+    
+    # Perform the swap
+    swap_window_positions "$window1_id" "$window2_id"
+}
+
+interactive_swap_windows() {
+    echo "Interactive swap mode: Click on two windows to swap their positions"
+    echo ""
+    
+    echo "Click on the first window..."
+    local window1_id
+    window1_id=$(pick_window)
+    
+    if [[ -z "$window1_id" ]]; then
+        echo "No window selected. Aborting swap."
+        return 1
+    fi
+    
+    local window1_title
+    window1_title=$(xdotool getwindowname "$window1_id" 2>/dev/null)
+    echo "✓ Selected first window: $window1_title"
+    echo ""
+    
+    echo "Click on the second window..."
+    local window2_id
+    window2_id=$(pick_window)
+    
+    if [[ -z "$window2_id" ]]; then
+        echo "No second window selected. Aborting swap."
+        return 1
+    fi
+    
+    if [[ "$window1_id" == "$window2_id" ]]; then
+        echo "Cannot swap a window with itself"
+        return 1
+    fi
+    
+    local window2_title
+    window2_title=$(xdotool getwindowname "$window2_id" 2>/dev/null)
+    echo "✓ Selected second window: $window2_title"
+    echo ""
+    
+    echo "Swapping positions..."
+    swap_window_positions "$window1_id" "$window2_id"
+}
+
+swap_window_positions() {
+    local window1_id="$1"
+    local window2_id="$2"
+    
+    # Get geometries
+    local window1_geom window2_geom
+    window1_geom=$(xdotool getwindowgeometry --shell "$window1_id" 2>/dev/null)
+    window2_geom=$(xdotool getwindowgeometry --shell "$window2_id" 2>/dev/null)
+    
+    if [[ -z "$window1_geom" || -z "$window2_geom" ]]; then
+        echo "Error: Could not get window geometries for swap"
+        return 1
+    fi
+    
+    # Parse window 1 geometry
+    eval "$window1_geom"
+    local w1_x=$X w1_y=$Y w1_width=$WIDTH w1_height=$HEIGHT
+    
+    # Parse window 2 geometry  
+    eval "$window2_geom"
+    local w2_x=$X w2_y=$Y w2_width=$WIDTH w2_height=$HEIGHT
+    
+    # Perform the swap with a small delay to avoid conflicts
+    echo "  Moving windows..."
+    
+    # Move window 1 to window 2's position
+    xdotool windowmove "$window1_id" "$w2_x" "$w2_y"
+    xdotool windowsize "$window1_id" "$w2_width" "$w2_height"
+    
+    # Small delay to ensure first move completes
+    sleep 0.1
+    
+    # Move window 2 to window 1's position
+    xdotool windowmove "$window2_id" "$w1_x" "$w1_y" 
+    xdotool windowsize "$window2_id" "$w1_width" "$w1_height"
+    
+    echo "✓ Windows swapped successfully"
+    
+    # Get window titles for confirmation
+    local title1 title2
+    title1=$(xdotool getwindowname "$window1_id" 2>/dev/null || echo "Window $window1_id")
+    title2=$(xdotool getwindowname "$window2_id" 2>/dev/null || echo "Window $window2_id") 
+    
+    echo "  $title1 → Position ${w2_x}×${w2_y} (${w2_width}×${w2_height})"
+    echo "  $title2 → Position ${w1_x}×${w1_y} (${w1_width}×${w1_height})"
+}
+
+# Workspace profile functions
+save_workspace_profile() {
+    local profile_name="$1"
+    local profiles_dir="$CONFIG_DIR/workspace-profiles"
+    local profile_file="$profiles_dir/$profile_name.profile"
+    
+    # Create profiles directory if it doesn't exist
+    mkdir -p "$profiles_dir"
+    
+    # Get current workspace
+    local current_ws
+    current_ws=$(xdotool get_desktop)
+    
+    echo "Saving workspace profile: $profile_name"
+    echo "Current workspace: $current_ws"
+    
+    # Clear existing profile
+    > "$profile_file"
+    
+    # Save workspace number
+    echo "WORKSPACE=$current_ws" >> "$profile_file"
+    echo "" >> "$profile_file"
+    
+    # Get all visible windows on current workspace
+    local windows
+    windows=$(wmctrl -l | awk -v ws="$current_ws" '$2 == ws {print $1}' | grep -v '^$')
+    
+    if [[ -z "$windows" ]]; then
+        echo "No windows found on current workspace"
+        rm -f "$profile_file"
+        return 1
+    fi
+    
+    local window_count=0
+    echo "# Window layout for workspace $current_ws" >> "$profile_file"
+    
+    while read -r window_id; do
+        if [[ -n "$window_id" ]]; then
+            # Get window geometry and title
+            local geom
+            geom=$(xdotool getwindowgeometry --shell "$window_id" 2>/dev/null)
+            
+            if [[ -n "$geom" ]]; then
+                eval "$geom"
+                local title
+                title=$(xdotool getwindowname "$window_id" 2>/dev/null | sed 's/["\]/\\&/g')
+                
+                echo "# Window: $title" >> "$profile_file"
+                echo "WINDOW_${window_count}_ID=$window_id" >> "$profile_file"
+                echo "WINDOW_${window_count}_X=$X" >> "$profile_file"
+                echo "WINDOW_${window_count}_Y=$Y" >> "$profile_file"
+                echo "WINDOW_${window_count}_WIDTH=$WIDTH" >> "$profile_file"
+                echo "WINDOW_${window_count}_HEIGHT=$HEIGHT" >> "$profile_file"
+                echo "WINDOW_${window_count}_TITLE=\"$title\"" >> "$profile_file"
+                echo "" >> "$profile_file"
+                
+                ((window_count++))
+            fi
+        fi
+    done <<< "$windows"
+    
+    echo "WINDOW_COUNT=$window_count" >> "$profile_file"
+    
+    echo "✓ Saved $window_count windows to profile: $profile_name"
+    echo "Profile saved to: $profile_file"
+}
+
+load_workspace_profile() {
+    local profile_name="$1"
+    local profiles_dir="$CONFIG_DIR/workspace-profiles"
+    local profile_file="$profiles_dir/$profile_name.profile"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        echo "Error: Profile '$profile_name' not found"
+        echo "Available profiles:"
+        list_workspace_profiles
+        return 1
+    fi
+    
+    echo "Loading workspace profile: $profile_name"
+    
+    # Source the profile
+    source "$profile_file"
+    
+    local loaded_count=0
+    local applied_count=0
+    
+    for ((i=0; i<WINDOW_COUNT; i++)); do
+        local id_var="WINDOW_${i}_ID"
+        local x_var="WINDOW_${i}_X"
+        local y_var="WINDOW_${i}_Y"
+        local width_var="WINDOW_${i}_WIDTH"
+        local height_var="WINDOW_${i}_HEIGHT"
+        local title_var="WINDOW_${i}_TITLE"
+        
+        local window_id="${!id_var:-}"
+        local x="${!x_var:-}"
+        local y="${!y_var:-}"
+        local width="${!width_var:-}"
+        local height="${!height_var:-}"
+        local title="${!title_var:-}"
+        
+        if [[ -n "$window_id" && -n "$x" && -n "$y" && -n "$width" && -n "$height" ]]; then
+            ((loaded_count++))
+            
+            # Check if window still exists
+            if xdotool windowmap "$window_id" 2>/dev/null; then
+                # Position the window
+                xdotool windowmove "$window_id" "$x" "$y"
+                xdotool windowsize "$window_id" "$width" "$height"
+                ((applied_count++))
+                echo "✓ Positioned: $title"
+            else
+                echo "⚠ Window no longer exists: $title"
+            fi
+        fi
+    done
+    
+    echo ""
+    echo "Profile loaded: $profile_name"
+    echo "Windows loaded: $loaded_count"
+    echo "Windows positioned: $applied_count"
+}
+
+list_workspace_profiles() {
+    local profiles_dir="$CONFIG_DIR/workspace-profiles"
+    
+    if [[ ! -d "$profiles_dir" ]]; then
+        echo "No workspace profiles found"
+        echo "Create profiles with: place-window workspace save <name>"
+        return
+    fi
+    
+    local profiles
+    profiles=$(find "$profiles_dir" -name "*.profile" -type f 2>/dev/null | sort)
+    
+    if [[ -z "$profiles" ]]; then
+        echo "No workspace profiles found"
+        echo "Create profiles with: place-window workspace save <name>"
+        return
+    fi
+    
+    echo "Available workspace profiles:"
+    
+    while read -r profile_file; do
+        if [[ -n "$profile_file" ]]; then
+            local profile_name
+            profile_name=$(basename "$profile_file" .profile)
+            
+            # Get profile info
+            local workspace_num window_count
+            workspace_num=$(grep "^WORKSPACE=" "$profile_file" | cut -d= -f2)
+            window_count=$(grep "^WINDOW_COUNT=" "$profile_file" | cut -d= -f2)
+            
+            echo "  $profile_name (workspace $workspace_num, $window_count windows)"
+        fi
+    done <<< "$profiles"
+}
+
+delete_workspace_profile() {
+    local profile_name="$1"
+    local profiles_dir="$CONFIG_DIR/workspace-profiles"
+    local profile_file="$profiles_dir/$profile_name.profile"
+    
+    if [[ ! -f "$profile_file" ]]; then
+        echo "Error: Profile '$profile_name' not found"
+        list_workspace_profiles
+        return 1
+    fi
+    
+    echo "Deleting workspace profile: $profile_name"
+    rm -f "$profile_file"
+    echo "✓ Profile deleted"
+}
+
+# Watch daemon functions
+watch_daemon() {
+    # Start the daemon in the background
+    exec "$0" watch daemon &
+    local daemon_pid=$!
+    echo "Watch daemon started (PID: $daemon_pid)"
+    
+    # Wait for the daemon process
+    wait $daemon_pid
+}
+
+watch_daemon_internal() {
+    # Internal daemon function - monitors for new windows
+    local last_window_list=""
+    local check_interval=2
+    
+    # Trap signals for clean exit
+    trap 'echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
+    
+    echo "$(date): Watch daemon started"
+    
+    while true; do
+        # Get current visible windows
+        local current_windows
+        current_windows=$(wmctrl -l | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | wc -l)
+        
+        # Get detailed window list for comparison
+        local current_window_list
+        current_window_list=$(wmctrl -lG | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | sort)
+        
+        # Check if window list has changed
+        if [[ "$current_window_list" != "$last_window_list" ]]; then
+            if [[ -n "$last_window_list" ]]; then
+                # Windows changed - check if we should apply auto-layout
+                local new_window_count
+                new_window_count=$(echo "$current_window_list" | wc -l)
+                
+                if [[ $new_window_count -gt 0 && $new_window_count -le 5 ]]; then
+                    echo "$(date): Window change detected ($new_window_count windows) - applying auto-layout"
+                    
+                    # Apply auto-layout with a small delay to ensure window is fully created
+                    sleep 0.5
+                    "$0" auto > /dev/null 2>&1
+                fi
+            fi
+            last_window_list="$current_window_list"
+        fi
+        
+        sleep $check_interval
+    done
+}
+
 # Main logic
 case "${1:-}" in
     "")
@@ -1302,6 +1674,118 @@ case "${1:-}" in
                 ;;
         esac
         ;;
+    watch)
+        # Watch mode for automatic window tiling
+        case "${2:-}" in
+            start)
+                if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+                    echo "Watch mode already running (PID: $(pgrep -f "place-window.*watch.*daemon"))"
+                    exit 1
+                fi
+                echo "Starting watch mode daemon..."
+                echo "Monitoring for new windows and automatically applying tiling layouts"
+                echo "Press Ctrl+C to stop"
+                echo ""
+                
+                # Start the watch daemon
+                watch_daemon
+                ;;
+            stop)
+                if ! pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+                    echo "Watch mode is not running"
+                    exit 1
+                fi
+                
+                echo "Stopping watch mode daemon..."
+                pkill -f "place-window.*watch.*daemon"
+                echo "Watch mode stopped"
+                ;;
+            status)
+                if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+                    echo "Watch mode is running (PID: $(pgrep -f "place-window.*watch.*daemon"))"
+                else
+                    echo "Watch mode is not running"
+                fi
+                ;;
+            daemon)
+                # Internal daemon mode - do not call directly
+                watch_daemon_internal
+                ;;
+            *)
+                echo "Watch mode commands:"
+                echo "  place-window watch start    Start automatic tiling daemon"
+                echo "  place-window watch stop     Stop the daemon"
+                echo "  place-window watch status   Check daemon status"
+                echo ""
+                echo "Watch mode automatically applies auto-layout when new windows appear"
+                echo "It monitors window creation events and maintains optimal layouts"
+                ;;
+        esac
+        ;;
+    swap)
+        # Window swapping functionality
+        case "${2:-}" in
+            drag)
+                echo "Drag-to-swap mode: Click and drag a window to swap with another"
+                echo "Step 1: Click on the first window to start drag mode"
+                drag_swap_windows
+                ;;
+            interactive)
+                echo "Interactive swap: Click two windows to swap their positions"
+                interactive_swap_windows
+                ;;
+            *)
+                echo "Window swap commands:"
+                echo "  place-window swap drag          Drag-to-swap mode (click and drag)"
+                echo "  place-window swap interactive   Click two windows to swap positions"
+                echo ""
+                echo "Swap functionality allows you to exchange the positions and sizes"
+                echo "of two windows to reorganize your tiled layout"
+                ;;
+        esac
+        ;;
+    workspace)
+        # Workspace-specific configuration commands
+        case "${2:-}" in
+            save)
+                if [[ -z "${3:-}" ]]; then
+                    echo "Error: Profile name required"
+                    echo "Usage: place-window workspace save <profile-name>"
+                    exit 1
+                fi
+                save_workspace_profile "$3"
+                ;;
+            load)
+                if [[ -z "${3:-}" ]]; then
+                    echo "Error: Profile name required"
+                    echo "Usage: place-window workspace load <profile-name>"
+                    exit 1
+                fi
+                load_workspace_profile "$3"
+                ;;
+            list)
+                list_workspace_profiles
+                ;;
+            delete)
+                if [[ -z "${3:-}" ]]; then
+                    echo "Error: Profile name required"
+                    echo "Usage: place-window workspace delete <profile-name>"
+                    exit 1
+                fi
+                delete_workspace_profile "$3"
+                ;;
+            *)
+                echo "Workspace profile commands:"
+                echo "  place-window workspace save <name>     Save current workspace layout"
+                echo "  place-window workspace load <name>     Load saved workspace layout"
+                echo "  place-window workspace list            List all saved profiles"
+                echo "  place-window workspace delete <name>   Delete a profile"
+                echo ""
+                echo "Workspace profiles save the position and layout of all windows"
+                echo "on the current workspace, allowing you to restore entire layouts"
+                ;;
+        esac
+        ;;
     config)
         # Configuration commands
         case "${2:-}" in
@@ -1388,6 +1872,9 @@ Usage:
   place-window resize <direction> [pixels]  Simultaneous resize with adjacent windows
   place-window master <orientation>  Master-stack layouts
   place-window focus <direction>  Navigate between windows
+  place-window watch <command>    Watch mode for automatic tiling
+  place-window workspace <command>  Workspace-specific layout profiles
+  place-window swap <mode>        Window position swapping
   place-window <X> <Y> <W> <H>    Custom geometry
   place-window ws <N>             Move to workspace N (0-based)
   place-window save <name>        Save current window position
@@ -1430,6 +1917,30 @@ Focus navigation:
   place-window focus next/prev     Cycle through windows
   place-window focus up/down/left/right  Navigate geometrically
 
+Watch mode (automatic tiling daemon):
+  place-window watch start        Start automatic tiling daemon
+  place-window watch stop         Stop the daemon
+  place-window watch status       Check daemon status
+  
+  Watch mode monitors for new windows and automatically applies auto-layout
+  when window count changes. Runs in background until stopped.
+
+Workspace layout profiles:
+  place-window workspace save <name>     Save current workspace layout
+  place-window workspace load <name>     Load saved workspace layout
+  place-window workspace list           List all saved profiles
+  place-window workspace delete <name>   Delete a profile
+  
+  Workspace profiles save the position of all windows on the current
+  workspace, allowing you to restore entire multi-window layouts.
+
+Window position swapping:
+  place-window swap drag          Drag-to-swap mode (click and drag)
+  place-window swap interactive   Click two windows to swap positions
+  
+  Swap functionality allows you to exchange the positions and sizes
+  of two windows to reorganize your tiled layout quickly.
+
 Configuration commands:
   place-window config gap [SIZE]     Set or show gap size (default: 10px)
   place-window config panel [SIZE]   Set or show panel height (default: 32px)
@@ -1439,6 +1950,9 @@ Configuration commands:
 Examples:
   place-window                    # Interactive menu
   place-window auto               # Auto-arrange all visible windows
+  place-window watch start        # Start automatic tiling daemon
+  place-window workspace save work # Save current workspace layout
+  place-window swap interactive    # Swap positions of two windows
   place-window master vertical    # Master-stack with master on left
   place-window resize expand-right 100  # Expand window right by 100px
   place-window focus right        # Focus window to the right
