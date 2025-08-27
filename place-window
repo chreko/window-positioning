@@ -211,19 +211,27 @@ get_monitor_layout_area() {
     local panel_height=$PANEL_HEIGHT
     local panel_autohide="${PANEL_AUTOHIDE:-false}"
     
-    # Adjust for panel only if it reserves space (not auto-hiding)
-    local effective_panel_height=0
+    local usable_x=$((mx + gap))
+    local usable_y=$((my + gap))  # Always start at top + gap
+    local usable_w=$((mw - gap * 2))
+    local usable_h
+    
+    # Handle panel height in usable_h calculation
     if [[ "$panel_autohide" != "true" ]]; then
+        # Panel reserves space - subtract panel height from available height
         # Only apply panel height on primary monitor (usually the one containing 0,0)
         if [[ $mx -eq 0 && $my -eq 0 ]]; then
-            effective_panel_height=$panel_height
+            # Panel at top reserves space, so start windows below it
+            usable_y=$((my + panel_height + gap))
+            usable_h=$((mh - panel_height - gap * 2))
+        else
+            # No panel on this monitor
+            usable_h=$((mh - gap * 2))
         fi
+    else
+        # Panel auto-hides - use full monitor height (windows can overlap panel area)
+        usable_h=$((mh - gap * 2))
     fi
-    
-    local usable_x=$((mx + gap))
-    local usable_y=$((my + effective_panel_height + gap))
-    local usable_w=$((mw - gap * 2))
-    local usable_h=$((mh - effective_panel_height - gap * 2))
     
     echo "$usable_x:$usable_y:$usable_w:$usable_h"
 }
