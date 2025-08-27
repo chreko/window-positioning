@@ -204,41 +204,40 @@ get_window_monitor() {
     echo "$best_monitor"
 }
 
-# Get monitor-specific layout area
+# Get monitor-specific layout area (clean - only accounts for panel space)
 get_monitor_layout_area() {
     local monitor="$1"
     IFS=':' read -r name mx my mw mh <<< "$monitor"
     
-    local gap=$GAP
     local panel_height=$PANEL_HEIGHT
     local panel_autohide="${PANEL_AUTOHIDE:-false}"
     
-    local usable_x=$((mx + gap))
-    local usable_y=$((my + gap))  # Always start at top + gap
-    local usable_w=$((mw - gap * 2))
+    local usable_x=$mx
+    local usable_y=$my
+    local usable_w=$mw
     local usable_h
     
-    # Handle panel height in usable_h calculation
+    # Handle panel space - only subtract panel height from available area
     if [[ "$panel_autohide" == "true" ]]; then
-        # Panel auto-hides but still takes space - start at top but reduce height
-        # Only apply panel height on primary monitor (usually the one containing 0,0)
+        # Panel auto-hides - use full monitor space (windows can overlap panel area)
+        # Only reserve panel space on primary monitor (usually the one containing 0,0)
         if [[ $mx -eq 0 && $my -eq 0 ]]; then
-            # Panel auto-hides on this monitor - start at top but reserve panel space in height
-            usable_h=$((mh - panel_height - gap * 2))
+            # Panel auto-hides but reserve its space in height calculation
+            usable_h=$((mh - panel_height))
         else
-            # No panel on this monitor - use gaps plus much larger bottom margin
-            usable_h=$((mh - gap * 6))
+            # No panel on this monitor - use full monitor height
+            usable_h=$mh
         fi
     else
-        # Panel reserves space - subtract panel height from available height
+        # Panel reserves space - start windows below it and reduce height
         # Only apply panel height on primary monitor (usually the one containing 0,0)
         if [[ $mx -eq 0 && $my -eq 0 ]]; then
             # Panel at top reserves space, so start windows below it
-            usable_y=$((my + panel_height + gap))
-            usable_h=$((mh - panel_height - gap * 2))
+            usable_y=$((my + panel_height))
+            usable_h=$((mh - panel_height))
         else
-            # No panel on this monitor - use gaps plus much larger bottom margin  
-            usable_h=$((mh - gap * 6))
+            # No panel on this monitor - use full monitor space
+            usable_h=$mh
         fi
     fi
     
@@ -559,7 +558,12 @@ auto_layout_monitor_1_window() {
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     
     # Maximize with gaps
-    apply_geometry "$id" $usable_x $usable_y $usable_w $usable_h
+    local gap=$GAP
+    local final_x=$((usable_x + gap))
+    local final_y=$((usable_y + gap))
+    local final_w=$((usable_w - gap * 2))
+    local final_h=$((usable_h - gap * 2))
+    apply_geometry "$id" $final_x $final_y $final_w $final_h
 }
 
 auto_layout_monitor_2_windows() {
@@ -571,27 +575,39 @@ auto_layout_monitor_2_windows() {
     
     case "$layout" in
         equal)
-            # 50/50 split with gap between
+            # 50/50 split with gaps all around
             local gap=$GAP
-            local w=$(((usable_w - gap) / 2))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $usable_h
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 3))  # Remove left, right, and middle gaps
+            local final_h=$((usable_h - gap * 2))  # Remove top and bottom gaps
+            local w=$((final_w / 2))
+            apply_geometry "${ids[0]}" $final_x $final_y $w $final_h
+            apply_geometry "${ids[1]}" $((final_x + w + gap)) $final_y $w $final_h
             ;;
         primary-secondary)
-            # 70/30 split with gap between
+            # 70/30 split with gaps all around
             local gap=$GAP
-            local w1=$(((usable_w - gap) * 70 / 100))
-            local w2=$((usable_w - w1 - gap))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $usable_h
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 3))  # Remove left, right, and middle gaps
+            local final_h=$((usable_h - gap * 2))  # Remove top and bottom gaps
+            local w1=$((final_w * 70 / 100))
+            local w2=$((final_w - w1))
+            apply_geometry "${ids[0]}" $final_x $final_y $w1 $final_h
+            apply_geometry "${ids[1]}" $((final_x + w1 + gap)) $final_y $w2 $final_h
             ;;
         secondary-primary)
-            # 30/70 split with gap between
+            # 30/70 split with gaps all around
             local gap=$GAP
-            local w1=$(((usable_w - gap) * 30 / 100))
-            local w2=$((usable_w - w1 - gap))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $usable_h
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 3))  # Remove left, right, and middle gaps
+            local final_h=$((usable_h - gap * 2))  # Remove top and bottom gaps
+            local w1=$((final_w * 30 / 100))
+            local w2=$((final_w - w1))
+            apply_geometry "${ids[0]}" $final_x $final_y $w1 $final_h
+            apply_geometry "${ids[1]}" $((final_x + w1 + gap)) $final_y $w2 $final_h
             ;;
     esac
 }
@@ -605,15 +621,29 @@ auto_layout_monitor_3_windows() {
     
     case "$layout" in
         main-two-side)
-            # One left half, two stacked on right with proper gaps
+            # One left half, two stacked on right - clean gap logic with perfect alignment
             local gap=$GAP
-            local w1=$(((usable_w - gap) / 2))
-            local w2=$((usable_w - w1 - gap))
-            # Right side with balanced height and proper separation
-            local h2=$(((usable_h - gap * 6) / 2))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $((usable_y + gap)) $w2 $h2
-            apply_geometry "${ids[2]}" $((usable_x + w1 + gap)) $((usable_y + gap + h2 + gap * 4)) $w2 $h2
+            
+            # Calculate outer boundaries (with gaps from screen edges)
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 2))  # Remove left and right outer gaps
+            local final_h=$((usable_h - gap * 2))  # Remove top and bottom outer gaps
+            
+            # Calculate widths: left window (50%) + gap + right side (50%)
+            local left_w=$(((final_w - gap) / 2))
+            local right_w=$((final_w - left_w - gap))
+            local right_x=$((final_x + left_w + gap))
+            
+            # Calculate heights: right side split in half with gap in middle
+            local right_h=$(((final_h - gap) / 2))
+            local top_right_y=$final_y
+            local bottom_right_y=$((final_y + right_h + gap))
+            
+            # Apply positioning - perfect alignment!
+            apply_geometry "${ids[0]}" $final_x $final_y $left_w $final_h              # Left: full height
+            apply_geometry "${ids[1]}" $right_x $top_right_y $right_w $right_h         # Top-right: half height
+            apply_geometry "${ids[2]}" $right_x $bottom_right_y $right_w $right_h      # Bottom-right: half height
             ;;
         three-columns)
             # Three equal columns with gaps
@@ -1023,8 +1053,13 @@ apply_preset() {
             apply_geometry "$id" $usable_x $((usable_y + half_h)) $w $h
             ;;
         maximize) # Maximize (with gaps)
-            read -r w h <<< "$(ensure_minimum_size $usable_w $usable_h)"
-            apply_geometry "$id" $usable_x $usable_y $w $h
+            local gap=$GAP
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 2))
+            local final_h=$((usable_h - gap * 2))
+            read -r w h <<< "$(ensure_minimum_size $final_w $final_h)"
+            apply_geometry "$id" $final_x $final_y $w $h
             ;;
         *)
             # Check if it's a saved preset
