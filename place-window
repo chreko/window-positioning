@@ -142,7 +142,9 @@ load_position() {
 # Get screen and monitor information
 get_screen_info() {
     # Get total screen dimensions
-    xdotool getdisplaygeometry | read -r SCREEN_W SCREEN_H
+    local screen_geom
+    screen_geom=$(xdotool getdisplaygeometry)
+    read -r SCREEN_W SCREEN_H <<< "$screen_geom"
     export SCREEN_W SCREEN_H
     
     # Get monitor information using xrandr
@@ -217,7 +219,10 @@ get_monitor_layout_area() {
     local usable_h
     
     # Handle panel height in usable_h calculation
-    if [[ "$panel_autohide" != "true" ]]; then
+    if [[ "$panel_autohide" == "true" ]]; then
+        # Panel auto-hides - use full monitor height (windows can overlap panel area)
+        usable_h=$((mh - gap * 2))
+    else
         # Panel reserves space - subtract panel height from available height
         # Only apply panel height on primary monitor (usually the one containing 0,0)
         if [[ $mx -eq 0 && $my -eq 0 ]]; then
@@ -228,9 +233,6 @@ get_monitor_layout_area() {
             # No panel on this monitor
             usable_h=$((mh - gap * 2))
         fi
-    else
-        # Panel auto-hides - use full monitor height (windows can overlap panel area)
-        usable_h=$((mh - gap * 2))
     fi
     
     echo "$usable_x:$usable_y:$usable_w:$usable_h"
@@ -1530,13 +1532,13 @@ case "${1:-}" in
     monitors)
         # Show monitor information
         get_screen_info
-        echo "Screen Resolution: ${SCREEN_W}x${SCREEN_H}"
+        echo "Screen Resolution: ${SCREEN_W:-Unknown}x${SCREEN_H:-Unknown}"
         echo "Detected Monitors:"
         for i in "${!MONITORS[@]}"; do
             IFS=':' read -r name mx my mw mh <<< "${MONITORS[i]}"
             echo "  Monitor $((i+1)): $name (${mw}x${mh}+${mx}+${my})"
             
-            local layout_area=$(get_monitor_layout_area "${MONITORS[i]}")
+            layout_area=$(get_monitor_layout_area "${MONITORS[i]}")
             IFS=':' read -r ux uy uw uh <<< "$layout_area"
             echo "    Usable area: ${uw}x${uh}+${ux}+${uy} (with gaps)"
         done
