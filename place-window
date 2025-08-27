@@ -457,10 +457,10 @@ auto_layout() {
         local monitor=$(get_window_monitor "$window_id")
         IFS=':' read -r name mx my mw mh <<< "$monitor"
         local key="${mx},${my}"  # Use coordinates as unique key
-        if [[ -z "${monitor_windows[$key]}" ]]; then
-            monitor_windows[$key]="$window_id"
-        else
+        if [[ "${monitor_windows[$key]:-}" ]]; then
             monitor_windows[$key]="${monitor_windows[$key]} $window_id"
+        else
+            monitor_windows[$key]="$window_id"
         fi
     done
     
