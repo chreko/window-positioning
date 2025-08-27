@@ -2269,6 +2269,21 @@ case "${1:-}" in
                     echo "Watch mode is not running"
                 fi
                 ;;
+            toggle)
+                if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+                    # Watch mode is running, stop it
+                    echo "Watch mode is running - stopping..."
+                    pkill -f "place-window.*watch.*daemon"
+                    echo "Watch mode stopped"
+                else
+                    # Watch mode is not running, start it in background
+                    echo "Starting watch mode daemon..."
+                    exec "$0" watch daemon &
+                    daemon_pid=$!
+                    echo "Watch daemon started in background (PID: $daemon_pid)"
+                    echo "Use 'place-window watch stop' to stop it"
+                fi
+                ;;
             daemon)
                 # Internal daemon mode - do not call directly
                 watch_daemon_internal
@@ -2278,9 +2293,10 @@ case "${1:-}" in
                 echo "  place-window watch start    Start automatic tiling daemon"
                 echo "  place-window watch stop     Stop the daemon"
                 echo "  place-window watch status   Check daemon status"
+                echo "  place-window watch toggle   Toggle daemon on/off"
                 echo ""
-                echo "Watch mode automatically applies auto-layout when new windows appear"
-                echo "It monitors window creation events and maintains optimal layouts"
+                echo "Watch mode automatically applies the last-used layout per workspace"
+                echo "when windows are created, minimized, or maximized"
                 ;;
         esac
         ;;
@@ -2572,9 +2588,10 @@ Watch mode (automatic tiling daemon):
   place-window watch start        Start automatic tiling daemon
   place-window watch stop         Stop the daemon
   place-window watch status       Check daemon status
+  place-window watch toggle       Toggle daemon on/off
   
-  Watch mode monitors for new windows and automatically applies auto-layout
-  when window count changes. Runs in background until stopped.
+  Watch mode monitors window changes and automatically applies the last-used
+  layout per workspace. Responds to window creation, minimize, and maximize.
 
 Workspace layout profiles:
   place-window workspace save <name>     Save current workspace layout
