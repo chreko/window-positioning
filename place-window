@@ -226,8 +226,8 @@ get_monitor_layout_area() {
             # Panel auto-hides on this monitor - start at top but reserve panel space in height
             usable_h=$((mh - panel_height - gap * 2))
         else
-            # No panel on this monitor
-            usable_h=$((mh - gap * 2))
+            # No panel on this monitor - use gaps plus extra bottom margin
+            usable_h=$((mh - gap * 3))
         fi
     else
         # Panel reserves space - subtract panel height from available height
@@ -237,8 +237,8 @@ get_monitor_layout_area() {
             usable_y=$((my + panel_height + gap))
             usable_h=$((mh - panel_height - gap * 2))
         else
-            # No panel on this monitor
-            usable_h=$((mh - gap * 2))
+            # No panel on this monitor - use gaps plus extra bottom margin  
+            usable_h=$((mh - gap * 3))
         fi
     fi
     
