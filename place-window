@@ -635,10 +635,10 @@ auto_layout_monitor_3_windows() {
             local right_w=$((final_w - left_w - gap))
             local right_x=$((final_x + left_w + gap))
             
-            # Calculate heights: right side split in half with gap in middle
-            local right_h=$(((final_h - gap) / 2))
+            # Calculate heights: right side split in half with larger gap to prevent app overlap
+            local right_h=$(((final_h - gap * 4) / 2))  # Use 4x gap for safety
             local top_right_y=$final_y
-            local bottom_right_y=$((final_y + right_h + gap))
+            local bottom_right_y=$((final_y + right_h + gap * 4))
             
             # Apply positioning - perfect alignment!
             apply_geometry "${ids[0]}" $final_x $final_y $left_w $final_h              # Left: full height
@@ -646,23 +646,31 @@ auto_layout_monitor_3_windows() {
             apply_geometry "${ids[2]}" $right_x $bottom_right_y $right_w $right_h      # Bottom-right: half height
             ;;
         three-columns)
-            # Three equal columns with gaps
+            # Three equal columns with gaps all around
             local gap=$GAP
-            local w=$(((usable_w - gap * 2) / 3))  # 2 gaps between 3 columns
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $usable_h
-            apply_geometry "${ids[2]}" $((usable_x + (w + gap) * 2)) $usable_y $w $usable_h
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 2))  # Remove left and right outer gaps
+            local final_h=$((usable_h - gap * 2))  # Remove top and bottom outer gaps
+            local w=$(((final_w - gap * 2) / 3))  # 2 gaps between 3 columns
+            apply_geometry "${ids[0]}" $final_x $final_y $w $final_h
+            apply_geometry "${ids[1]}" $((final_x + w + gap)) $final_y $w $final_h
+            apply_geometry "${ids[2]}" $((final_x + (w + gap) * 2)) $final_y $w $final_h
             ;;
         center-sidebars)
-            # 20/60/20 split with gaps
+            # 20/60/20 split with gaps all around
             local gap=$GAP
-            local total_gap=$((gap * 2))  # 2 gaps between 3 windows
-            local w1=$(((usable_w - total_gap) * 20 / 100))
-            local w2=$(((usable_w - total_gap) * 60 / 100))
-            local w3=$((usable_w - w1 - w2 - total_gap))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $usable_h
-            apply_geometry "${ids[2]}" $((usable_x + w1 + w2 + total_gap)) $usable_y $w3 $usable_h
+            local final_x=$((usable_x + gap))
+            local final_y=$((usable_y + gap))
+            local final_w=$((usable_w - gap * 2))  # Remove left and right outer gaps
+            local final_h=$((usable_h - gap * 2))  # Remove top and bottom outer gaps
+            local available_w=$((final_w - gap * 2))  # Remove 2 gaps between 3 windows
+            local w1=$((available_w * 20 / 100))
+            local w2=$((available_w * 60 / 100))
+            local w3=$((available_w - w1 - w2))
+            apply_geometry "${ids[0]}" $final_x $final_y $w1 $final_h
+            apply_geometry "${ids[1]}" $((final_x + w1 + gap)) $final_y $w2 $final_h
+            apply_geometry "${ids[2]}" $((final_x + w1 + gap + w2 + gap)) $final_y $w3 $final_h
             ;;
     esac
 }
