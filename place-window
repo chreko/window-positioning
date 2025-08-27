@@ -13,6 +13,7 @@ set -euo pipefail
 CONFIG_DIR="${HOME}/.config/window-positioning"
 PRESETS_FILE="${CONFIG_DIR}/presets.conf"
 SETTINGS_FILE="${CONFIG_DIR}/settings.conf"
+WORKSPACE_STATE_FILE="${CONFIG_DIR}/workspace-state.conf"
 
 # Ensure config directory exists
 mkdir -p "$CONFIG_DIR"
@@ -76,6 +77,37 @@ PANEL_HEIGHT=${PANEL_HEIGHT:-32}
 PANEL_AUTOHIDE=${PANEL_AUTOHIDE:-false}
 MIN_WIDTH=${MIN_WIDTH:-400}
 MIN_HEIGHT=${MIN_HEIGHT:-300}
+
+# Workspace state tracking functions
+get_current_workspace() {
+    # Get current desktop/workspace number
+    xdotool get_desktop 2>/dev/null || echo "0"
+}
+
+save_workspace_meta_layout() {
+    local workspace="$1"
+    local meta_layout="$2"
+    
+    # Initialize workspace state file if it doesn't exist
+    [[ ! -f "$WORKSPACE_STATE_FILE" ]] && touch "$WORKSPACE_STATE_FILE"
+    
+    # Remove any existing entry for this workspace and add new one
+    grep -v "^WORKSPACE_${workspace}_META=" "$WORKSPACE_STATE_FILE" > "${WORKSPACE_STATE_FILE}.tmp" 2>/dev/null || touch "${WORKSPACE_STATE_FILE}.tmp"
+    echo "WORKSPACE_${workspace}_META=${meta_layout}" >> "${WORKSPACE_STATE_FILE}.tmp"
+    mv "${WORKSPACE_STATE_FILE}.tmp" "$WORKSPACE_STATE_FILE"
+}
+
+get_workspace_meta_layout() {
+    local workspace="$1"
+    
+    # Return the last meta-layout used on this workspace, or "auto" as default
+    if [[ -f "$WORKSPACE_STATE_FILE" ]]; then
+        local layout=$(grep "^WORKSPACE_${workspace}_META=" "$WORKSPACE_STATE_FILE" | cut -d'=' -f2-)
+        [[ -n "$layout" ]] && echo "$layout" || echo "auto"
+    else
+        echo "auto"
+    fi
+}
 
 # Function to pick a window with mouse
 pick_window() {
@@ -1816,43 +1848,74 @@ watch_daemon() {
 }
 
 watch_daemon_internal() {
-    # Internal daemon function - monitors for new windows
+    # Event-driven daemon function - monitors X11 window events in real-time
     local last_window_list=""
-    local check_interval=2
     
     # Trap signals for clean exit
-    trap 'echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
+    trap 'echo "Watch daemon stopped"; kill $MONITOR_PID 2>/dev/null; exit 0' SIGINT SIGTERM
     
-    echo "$(date): Watch daemon started"
+    echo "$(date): Event-driven watch daemon started"
+    echo "$(date): Monitoring X11 window events for instant response..."
+    
+    # Function to apply layout when window state changes
+    apply_workspace_layout() {
+        local new_window_count
+        new_window_count=$(wmctrl -l | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | wc -l 2>/dev/null || echo "0")
+        
+        if [[ $new_window_count -gt 0 ]]; then
+            # Get the last layout used on current workspace
+            local current_workspace
+            current_workspace=$(xdotool get_desktop 2>/dev/null || echo "0")
+            local workspace_layout
+            workspace_layout=$(get_workspace_meta_layout "$current_workspace")
+            
+            echo "$(date): Window event detected ($new_window_count windows) - applying layout: $workspace_layout"
+            
+            # Small delay to ensure window is fully ready
+            sleep 0.2
+            if [[ "$workspace_layout" == "auto" ]]; then
+                "$0" auto > /dev/null 2>&1
+            else
+                $0 $workspace_layout > /dev/null 2>&1
+            fi
+        fi
+    }
+    
+    # Use fast polling approach - more reliable in Qubes dom0
+    echo "$(date): Using fast polling for reliable window monitoring (0.3s interval)"
     
     while true; do
-        # Get current visible windows
-        local current_windows
-        current_windows=$(wmctrl -l | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | wc -l)
-        
-        # Get detailed window list for comparison
+        # Get detailed window list including states for comparison
         local current_window_list
-        current_window_list=$(wmctrl -lG | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | sort)
+        current_window_list=$(wmctrl -lG 2>/dev/null | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | sort)
         
-        # Check if window list has changed
-        if [[ "$current_window_list" != "$last_window_list" ]]; then
-            if [[ -n "$last_window_list" ]]; then
-                # Windows changed - check if we should apply auto-layout
-                local new_window_count
-                new_window_count=$(echo "$current_window_list" | wc -l)
-                
-                if [[ $new_window_count -gt 0 && $new_window_count -le 5 ]]; then
-                    echo "$(date): Window change detected ($new_window_count windows) - applying auto-layout"
-                    
-                    # Apply auto-layout with a small delay to ensure window is fully created
-                    sleep 0.5
-                    "$0" auto > /dev/null 2>&1
+        # Also include window states to detect minimize/maximize changes
+        local current_states=""
+        if command -v wmctrl >/dev/null 2>&1; then
+            # Get window states to detect minimization changes
+            while IFS= read -r window_id; do
+                if [[ -n "$window_id" ]]; then
+                    local state
+                    state=$(xprop -id "$window_id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED" || echo "NORMAL")
+                    current_states="${current_states}${window_id}:${state}\n"
                 fi
-            fi
-            last_window_list="$current_window_list"
+            done < <(wmctrl -l 2>/dev/null | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | awk '{print $1}')
         fi
         
-        sleep $check_interval
+        # Combine window list and states for comprehensive comparison
+        local combined_state="${current_window_list}|${current_states}"
+        
+        # Check if anything has changed (windows or states)
+        if [[ "$combined_state" != "$last_window_list" ]]; then
+            if [[ -n "$last_window_list" ]]; then
+                echo "$(date): Window state change detected - triggering layout"
+                apply_workspace_layout
+            fi
+            last_window_list="$combined_state"
+        fi
+        
+        # Fast polling for responsiveness
+        sleep 0.3
     done
 }
 
@@ -1924,6 +1987,7 @@ case "${1:-}" in
     auto)
         # Auto-layout all visible windows
         auto_layout
+        save_workspace_meta_layout "$(get_current_workspace)" "auto"
         ;;
     resize)
         # Simultaneous resize with adjacent windows
@@ -2108,24 +2172,29 @@ case "${1:-}" in
             maximize)
                 echo "Applying maximize meta-layout: Top window maximized, others minimized"
                 apply_meta_maximize
+                save_workspace_meta_layout "$(get_current_workspace)" "meta maximize"
                 ;;
             columns)
                 echo "Applying columns meta-layout: All windows in equal columns"
                 apply_meta_columns
+                save_workspace_meta_layout "$(get_current_workspace)" "meta columns"
                 ;;
             rows)
                 echo "Applying rows meta-layout: All windows in equal rows"
                 apply_meta_rows
+                save_workspace_meta_layout "$(get_current_workspace)" "meta rows"
                 ;;
             grid)
                 echo "Applying grid meta-layout: Dynamic grid based on window count"
                 apply_meta_grid
+                save_workspace_meta_layout "$(get_current_workspace)" "meta grid"
                 ;;
             main-sidebar-*)
                 width_param="${2#main-sidebar-}"
                 if [[ "$width_param" =~ ^[0-9]+$ && $width_param -ge 10 && $width_param -le 90 ]]; then
                     echo "Applying main-sidebar-${width_param} meta-layout"
                     apply_meta_main_sidebar "$width_param"
+                    save_workspace_meta_layout "$(get_current_workspace)" "meta main-sidebar-${width_param}"
                 else
                     echo "Error: Width parameter must be 10-90 (percentage)"
                     echo "Usage: place-window meta main-sidebar-70"
@@ -2137,6 +2206,7 @@ case "${1:-}" in
                 if [[ "$width_param" =~ ^[0-9]+$ && $width_param -ge 10 && $width_param -le 90 ]]; then
                     echo "Applying center-sidebar-${width_param} meta-layout"
                     apply_meta_center_sidebar "$width_param"
+                    save_workspace_meta_layout "$(get_current_workspace)" "meta center-sidebar-${width_param}"
                 else
                     echo "Error: Width parameter must be 10-90 (percentage)"
                     echo "Usage: place-window meta center-sidebar-60"
@@ -2157,6 +2227,21 @@ case "${1:-}" in
                 echo "  place-window meta grid              # 5 windows = 3×2 grid"
                 echo "  place-window meta main-sidebar-70   # 70% main + 30% sidebar stack"
                 echo "  place-window meta center-sidebar-50 # 50% center + 25% each side"
+                ;;
+        esac
+        ;;
+    workspace)
+        # Workspace layout status and management
+        case "${2:-}" in
+            status)
+                current_workspace=$(get_current_workspace)
+                current_layout=$(get_workspace_meta_layout "$current_workspace")
+                echo "Current workspace: $current_workspace"
+                echo "Layout: $current_layout"
+                ;;
+            *)
+                echo "Workspace commands:"
+                echo "  place-window workspace status    Show current workspace and layout"
                 ;;
         esac
         ;;
