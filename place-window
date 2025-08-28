@@ -188,6 +188,17 @@ update_setting() {
     sed -i "s/^${setting_name}=.*/${setting_name}=${new_value}/" "$SETTINGS_FILE"
 }
 
+# Get the monitor containing the currently focused window
+get_current_monitor() {
+    local focused_window=$(xdotool getwindowfocus 2>/dev/null)
+    if [[ -n "$focused_window" && "$focused_window" != "0" ]]; then
+        get_window_monitor "$focused_window"
+    else
+        # Fallback to primary monitor if no focused window
+        get_primary_monitor
+    fi
+}
+
 # Workspace state tracking functions
 get_current_workspace() {
     # Get current desktop/workspace number
@@ -669,6 +680,75 @@ apply_meta_center_corners_single_monitor() {
     apply_geometry "${window_list[4]}" $((usable_x + usable_w - gap - corner_w)) $bottom_corner_y $corner_w $corner_h
 }
 
+# Center-sidebar layout (3-column: left sidebar | center master | right sidebar)
+apply_meta_center_sidebar_single_monitor() {
+    local monitor="$1"
+    local center_width_percent="$2"
+    shift 2
+    local window_list=("$@")
+    
+    init_layout_vars "$monitor"
+    
+    local num_windows=${#window_list[@]}
+    if [[ $num_windows -eq 1 ]]; then
+        # Only one window - use maximize atomic function
+        apply_meta_maximize_single_monitor "$monitor" "${window_list[@]}"
+        return
+    fi
+    
+    if [[ $num_windows -eq 2 ]]; then
+        # Two windows - use main-sidebar atomic function with specified percentage
+        apply_meta_main_sidebar_single_monitor "$monitor" "$center_width_percent" "${window_list[@]}"
+        return
+    fi
+    
+    # For 3+ windows, create the proper center-sidebar layout:
+    # Left sidebar: (100-X)/2 width | Center: X% width | Right sidebar: (100-X)/2 width
+    
+    # Calculate three-column widths with gaps between them
+    local gap_between=$((gap + decoration_w))  # Gap + decoration between columns
+    local available_w=$((final_w - gap_between * 2))  # Total width minus 2 gaps between columns
+    local center_w=$((available_w * center_width_percent / 100))
+    local sidebar_total_w=$((available_w - center_w))
+    local sidebar_w=$((sidebar_total_w / 2))
+    
+    # Calculate column positions
+    local left_sidebar_x=$final_x
+    local center_x=$((final_x + sidebar_w + gap_between))
+    local right_sidebar_x=$((center_x + center_w + gap_between))
+    
+    # Position center window (first window)
+    apply_geometry "${window_list[0]}" $center_x $final_y $center_w $final_h
+    
+    # Distribute remaining windows between left and right sidebars
+    local sidebar_windows=$((num_windows - 1))
+    local left_sidebar_count=$((sidebar_windows / 2))
+    local right_sidebar_count=$((sidebar_windows - left_sidebar_count))
+    
+    # Position left sidebar windows (stacked vertically)
+    if [[ $left_sidebar_count -gt 0 ]]; then
+        local gap_vertical=$((gap + decoration_h))  # Gap + decoration between stacked windows
+        local available_sidebar_h=$((final_h - gap_vertical * (left_sidebar_count - 1)))
+        local left_sidebar_h=$((available_sidebar_h / left_sidebar_count))
+        for ((i=1; i<=left_sidebar_count; i++)); do
+            local y=$((final_y + (i - 1) * (left_sidebar_h + gap_vertical)))
+            apply_geometry "${window_list[i]}" $left_sidebar_x $y $sidebar_w $left_sidebar_h
+        done
+    fi
+    
+    # Position right sidebar windows (stacked vertically)  
+    if [[ $right_sidebar_count -gt 0 ]]; then
+        local gap_vertical=$((gap + decoration_h))  # Gap + decoration between stacked windows
+        local available_sidebar_h=$((final_h - gap_vertical * (right_sidebar_count - 1)))
+        local right_sidebar_h=$((available_sidebar_h / right_sidebar_count))
+        for ((i=0; i<right_sidebar_count; i++)); do
+            local window_idx=$((left_sidebar_count + 1 + i))
+            local y=$((final_y + i * (right_sidebar_h + gap_vertical)))
+            apply_geometry "${window_list[window_idx]}" $right_sidebar_x $y $sidebar_w $right_sidebar_h
+        done
+    fi
+}
+
 # Main auto-layout function (monitor-aware)
 auto_layout() {
     echo "Detecting visible windows..."
@@ -963,6 +1043,40 @@ simultaneous_resize() {
 }
 
 # Master-stack layouts (xpytile-inspired)
+master_stack_layout_current_monitor() {
+    local orientation="$1"  # vertical or horizontal
+    local percentage="${2:-60}"  # master window percentage (default 60%)
+    
+    get_screen_info
+    local current_monitor=$(get_current_monitor)
+    
+    # Get windows on the current monitor only
+    local windows_on_monitor=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && windows_on_monitor+=("$line")
+    done < <(get_visible_windows_on_monitor "$current_monitor")
+    
+    if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
+        echo "No visible windows on current monitor"
+        return 1
+    fi
+    
+    IFS=':' read -r name mx my mw mh <<< "$current_monitor"
+    local num_windows=${#windows_on_monitor[@]}
+    echo "Monitor $name: Applying master-stack ($orientation, ${percentage}%) to $num_windows window(s)"
+    
+    if [[ "$orientation" == "vertical" ]]; then
+        # Master on left, stack on right - use main-sidebar atomic function
+        apply_meta_main_sidebar_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
+    else
+        # Master on top, stack on bottom - use topbar-main atomic function  
+        apply_meta_topbar_main_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
+    fi
+    
+    echo "Master-stack layout ($orientation) applied to current monitor"
+}
+
+# Master-stack layouts for all monitors (original behavior)
 master_stack_layout() {
     local orientation="$1"  # vertical or horizontal
     local percentage="${2:-60}"  # master window percentage (default 60%)
@@ -1006,6 +1120,32 @@ master_stack_layout() {
     done
     
     echo "Master-stack layout ($orientation) applied to ${#monitors_with_windows[@]} monitor(s)"
+}
+
+# Center master layout for current monitor only
+center_master_layout_current_monitor() {
+    local percentage="${1:-50}"
+    
+    get_screen_info
+    local current_monitor=$(get_current_monitor)
+    
+    local windows_on_monitor=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && windows_on_monitor+=("$line")
+    done < <(get_visible_windows_on_monitor "$current_monitor")
+    
+    if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
+        echo "No visible windows on current monitor"
+        return 1
+    fi
+    
+    IFS=':' read -r name mx my mw mh <<< "$current_monitor"
+    local num_windows=${#windows_on_monitor[@]}
+    echo "Monitor $name: Applying center master layout (${percentage}%) to $num_windows window(s)"
+    
+    apply_meta_center_sidebar_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
+    
+    echo "Center master layout applied to current monitor"
 }
 
 # Focus navigation
@@ -2128,50 +2268,89 @@ case "${1:-}" in
         esac
         ;;
     master)
-        # Master-stack layouts
+        # Master-stack layouts - apply to current monitor by default, all monitors with --all
         case "${2:-}" in
             vertical|horizontal)
-                # Check if third parameter is a percentage
-                percentage="${3:-60}"
-                if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
-                    master_stack_layout "$2" "$percentage"
-                else
-                    if [[ -n "$3" ]]; then
-                        echo "Error: Percentage must be 10-90"
-                        echo "Usage: place-window master vertical [10-90]"
-                        exit 1
+                # Check for --all flag to apply to all monitors
+                if [[ "${3:-}" == "--all" ]]; then
+                    # Apply to all monitors
+                    percentage="${4:-60}"
+                    if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                        master_stack_layout "$2" "$percentage"
+                    else
+                        if [[ -n "$4" ]]; then
+                            echo "Error: Percentage must be 10-90"
+                            echo "Usage: place-window master vertical --all [10-90]"
+                            exit 1
+                        fi
+                        master_stack_layout "$2" 60  # Default 60%
                     fi
-                    master_stack_layout "$2" 60  # Default 60%
+                else
+                    # Apply to current monitor only (default behavior)
+                    percentage="${3:-60}"
+                    if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                        master_stack_layout_current_monitor "$2" "$percentage"
+                    else
+                        if [[ -n "$3" ]]; then
+                            echo "Error: Percentage must be 10-90"
+                            echo "Usage: place-window master vertical [10-90]"
+                            exit 1
+                        fi
+                        master_stack_layout_current_monitor "$2" 60  # Default 60%
+                    fi
                 fi
                 ;;
             center)
-                # Check if third parameter is a percentage
-                percentage="${3:-50}"
-                if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
-                    apply_meta_center_sidebar "$percentage"
-                    save_workspace_meta_layout "$(get_current_workspace)" "master center-${percentage}"
-                else
-                    if [[ -n "$3" ]]; then
-                        echo "Error: Percentage must be 10-90"
-                        echo "Usage: place-window master center [10-90]"
-                        exit 1
+                # Check for --all flag to apply to all monitors
+                if [[ "${3:-}" == "--all" ]]; then
+                    # Apply to all monitors
+                    percentage="${4:-50}"
+                    if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                        apply_meta_center_sidebar "$percentage"
+                        save_workspace_meta_layout "$(get_current_workspace)" "master center-${percentage}"
+                    else
+                        if [[ -n "$4" ]]; then
+                            echo "Error: Percentage must be 10-90"
+                            echo "Usage: place-window master center --all [10-90]"
+                            exit 1
+                        fi
+                        apply_meta_center_sidebar 50  # Default 50%
+                        save_workspace_meta_layout "$(get_current_workspace)" "master center-50"
                     fi
-                    apply_meta_center_sidebar 50  # Default 50%
-                    save_workspace_meta_layout "$(get_current_workspace)" "master center-50"
+                else
+                    # Apply to current monitor only (default behavior)
+                    percentage="${3:-50}"
+                    if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                        center_master_layout_current_monitor "$percentage"
+                        save_workspace_meta_layout "$(get_current_workspace)" "master center-${percentage}"
+                    else
+                        if [[ -n "$3" ]]; then
+                            echo "Error: Percentage must be 10-90"
+                            echo "Usage: place-window master center [10-90]"
+                            exit 1
+                        fi
+                        center_master_layout_current_monitor 50  # Default 50%
+                        save_workspace_meta_layout "$(get_current_workspace)" "master center-50"
+                    fi
                 fi
                 ;;
             *)
-                echo "Master layouts:"
-                echo "  place-window master vertical [percentage]    Master left, stack right"
-                echo "  place-window master horizontal [percentage]  Master top, stack bottom"
-                echo "  place-window master center [percentage]      Center master, side stacks"
+                echo "Master layouts (apply to current monitor by default):"
+                echo "  place-window master vertical [percentage]      Master left, stack right"
+                echo "  place-window master horizontal [percentage]    Master top, stack bottom"
+                echo "  place-window master center [percentage]        Center master, side stacks"
+                echo ""
+                echo "Apply to all monitors instead of current:"
+                echo "  place-window master vertical --all [percentage]   Apply to all monitors"
+                echo "  place-window master horizontal --all [percentage] Apply to all monitors"
+                echo "  place-window master center --all [percentage]     Apply to all monitors"
                 echo ""
                 echo "Examples:"
-                echo "  place-window master vertical      # 60% master (default)"
-                echo "  place-window master vertical 70   # 70% master, 30% stack"
-                echo "  place-window master horizontal 50 # 50% master, 50% stack"
-                echo "  place-window master center        # 50% center (default)"
-                echo "  place-window master center 60     # 60% center, 20% each side"
+                echo "  place-window master vertical        # 60% master on current monitor"
+                echo "  place-window master vertical 70     # 70% master on current monitor"
+                echo "  place-window master vertical --all 60  # 60% master on all monitors"
+                echo "  place-window master center          # 50% center on current monitor"
+                echo "  place-window master center --all 50 # 50% center on all monitors"
                 ;;
         esac
         ;;
@@ -2611,10 +2790,11 @@ Auto-layout:
     4 windows: grid, main-three-side, three-top-bottom
     5 windows: center-corners, two-three-columns, grid-wide-bottom
 
-Master layouts (xpytile-inspired):
+Master layouts (current monitor, xpytile-inspired):
   place-window master vertical [%]   Master left, stack right (default 60%)  
   place-window master horizontal [%] Master top, stack bottom (default 60%)
   place-window master center [%]     Center master, side stacks (default 50%)
+  place-window master * --all [%]    Apply to all monitors instead
 
 Simultaneous resize (affects adjacent windows):
   place-window resize expand-right [pixels]   Expand right, shrink adjacent
@@ -2669,9 +2849,10 @@ Examples:
   place-window watch start        # Start automatic tiling daemon
   place-window workspace save work # Save current workspace layout
   place-window swap interactive    # Swap positions of two windows
-  place-window master vertical    # Master-stack with master on left (60%)
-  place-window master vertical 70 # Master-stack with 70% master, 30% stack
-  place-window master center 60   # Center master (60%) with 20% each side
+  place-window master vertical    # Master-stack with master on left (60%) - current monitor
+  place-window master vertical 70 # Master-stack with 70% master, 30% stack - current monitor
+  place-window master vertical --all 60 # Master-stack on all monitors (60%)
+  place-window master center 60   # Center master (60%) with 20% each side - current monitor
   place-window resize expand-right 100  # Expand window right by 100px
   place-window focus right        # Focus window to the right
   place-window auto-config 2 primary-secondary  # 70/30 split for 2 windows
