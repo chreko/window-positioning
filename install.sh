@@ -77,6 +77,13 @@ PANEL_HEIGHT=32
 # When true, panel height is ignored for layout calculations
 PANEL_AUTOHIDE=false
 
+# Window decoration dimensions (in pixels)
+# Height: title bar height - set to 0 if windows don't have title bars
+DECORATION_HEIGHT=24
+
+# Width: side border width (left + right combined) - usually 0 for modern themes  
+DECORATION_WIDTH=0
+
 # Minimum window size
 MIN_WIDTH=400
 MIN_HEIGHT=300

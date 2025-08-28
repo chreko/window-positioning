@@ -27,7 +27,7 @@ GAP=10
 
 # Panel height (adjust for your XFCE theme)
 # Set to 0 if panel auto-hides or doesn't reserve space
-PANEL_HEIGHT=32
+PANEL_HEIGHT=30
 
 # Panel auto-hide mode
 # Set to true if panel is set to auto-hide (intelligently or always)
@@ -51,6 +51,13 @@ AUTO_LAYOUT_2="equal"
 AUTO_LAYOUT_3="main-two-side"
 AUTO_LAYOUT_4="grid"
 AUTO_LAYOUT_5="grid-wide-bottom"
+
+# Window decoration dimensions (in pixels)
+# Height: title bar height - set to 0 if windows don't have title bars
+DECORATION_HEIGHT=24
+
+# Width: side border width (left + right combined) - usually 0 for modern themes  
+DECORATION_WIDTH=0
 EOF
 fi
 
@@ -73,10 +80,77 @@ source "$SETTINGS_FILE"
 
 # Set defaults if not in config
 GAP=${GAP:-10}
-PANEL_HEIGHT=${PANEL_HEIGHT:-32}
+PANEL_HEIGHT=${PANEL_HEIGHT:-30}
 PANEL_AUTOHIDE=${PANEL_AUTOHIDE:-false}
 MIN_WIDTH=${MIN_WIDTH:-400}
 MIN_HEIGHT=${MIN_HEIGHT:-300}
+
+# Window decoration dimensions - configurable via settings
+DECORATION_HEIGHT=${DECORATION_HEIGHT:-24}
+DECORATION_WIDTH=${DECORATION_WIDTH:-0}
+
+# Auto-detect decoration dimensions from a sample window
+auto_detect_decorations() {
+    echo "Auto-detecting window decoration dimensions..."
+    echo "Please click on any window to sample decoration sizes..."
+    
+    # Get window ID
+    local window_id=$(xdotool selectwindow 2>/dev/null)
+    if [[ -z "$window_id" ]]; then
+        echo "No window selected"
+        return 1
+    fi
+    
+    # Get detailed window information from xwininfo
+    local frame_info=$(xwininfo -id "$window_id" 2>/dev/null)
+    if [[ -z "$frame_info" ]]; then
+        echo "Could not get window frame information"
+        return 1
+    fi
+    
+    # Parse xwininfo output for decoration detection
+    local relative_x=$(echo "$frame_info" | grep "Relative upper-left X:" | awk '{print $4}')
+    local relative_y=$(echo "$frame_info" | grep "Relative upper-left Y:" | awk '{print $4}')
+    local border_width=$(echo "$frame_info" | grep "Border width:" | awk '{print $3}')
+    
+    # The relative coordinates show the client area offset from the frame
+    # relative_y is the title bar height
+    # relative_x * 2 is the total horizontal decoration (left + right borders)
+    local detected_height=$((relative_y))
+    local detected_width=$((relative_x * 2))
+    
+    # Add border width if present (most modern themes have border_width=0)
+    if [[ -n "$border_width" && "$border_width" -gt 0 ]]; then
+        detected_width=$((detected_width + border_width * 2))
+    fi
+    
+    echo "Detection results:"
+    echo "  Relative client position: ${relative_x},${relative_y}"
+    echo "  Border width: ${border_width}px"
+    echo "  Detected decoration width: ${detected_width}px (left+right borders)"
+    echo "  Detected decoration height: ${detected_height}px (title bar)"
+    
+    # Sanity check - typical values should be reasonable
+    if [[ "$detected_height" -lt 0 || "$detected_height" -gt 50 ]]; then
+        echo "Warning: Detected height ($detected_height) seems unusual"
+    fi
+    if [[ "$detected_width" -lt 0 || "$detected_width" -gt 20 ]]; then
+        echo "Warning: Detected width ($detected_width) seems unusual"  
+    fi
+    
+    # Offer to save the detected values
+    read -p "Update configuration with detected values? [y/N]: " confirm
+    if [[ "$confirm" == [yY] ]]; then
+        sed -i "s/^DECORATION_WIDTH=.*/DECORATION_WIDTH=$detected_width/" "$SETTINGS_FILE"
+        sed -i "s/^DECORATION_HEIGHT=.*/DECORATION_HEIGHT=$detected_height/" "$SETTINGS_FILE"
+        echo "✓ Configuration updated"
+        echo "  Decoration width: ${detected_width}px"
+        echo "  Decoration height: ${detected_height}px"
+        echo "Restart place-window for changes to take effect."
+    else
+        echo "Configuration not changed"
+    fi
+}
 
 # Workspace state tracking functions
 get_current_workspace() {
@@ -204,6 +278,35 @@ get_screen_info() {
     fi
 }
 
+# Get the primary monitor (where the panel is located)
+get_primary_monitor() {
+    # Try xrandr primary detection first
+    local primary_output=$(xrandr --query 2>/dev/null | grep " primary " | cut -d' ' -f1)
+    
+    if [[ -n "$primary_output" ]]; then
+        # Find the monitor entry that matches the primary output
+        for monitor in "${MONITORS[@]}"; do
+            IFS=':' read -r name x y w h <<< "$monitor"
+            if [[ "$name" == "$primary_output" ]]; then
+                echo "$monitor"
+                return 0
+            fi
+        done
+    fi
+    
+    # Fallback: assume monitor at coordinates 0,0 is primary (panel location)
+    for monitor in "${MONITORS[@]}"; do
+        IFS=':' read -r name x y w h <<< "$monitor"
+        if [[ $x -eq 0 && $y -eq 0 ]]; then
+            echo "$monitor"
+            return 0
+        fi
+    done
+    
+    # Last resort: use first monitor
+    echo "${MONITORS[0]}"
+}
+
 # Get which monitor a window is primarily on
 get_window_monitor() {
     local window_id="$1"
@@ -244,26 +347,29 @@ get_monitor_layout_area() {
     local panel_height=$PANEL_HEIGHT
     local panel_autohide="${PANEL_AUTOHIDE:-false}"
     
+    # Get the actual primary monitor (where panel is located)
+    local primary_monitor=$(get_primary_monitor)
+    IFS=':' read -r primary_name primary_x primary_y primary_w primary_h <<< "$primary_monitor"
+    
     local usable_x=$mx
     local usable_y=$my
     local usable_w=$mw
     local usable_h
     
-    # Handle panel space - only subtract panel height from available area
+    # Check if this monitor is the primary monitor (has the panel)
+    local is_primary=false
+    if [[ "$name" == "$primary_name" ]]; then
+        is_primary=true
+    fi
+    
+    # Handle panel space - only subtract panel height from primary monitor
     if [[ "$panel_autohide" == "true" ]]; then
         # Panel auto-hides - use full monitor space (windows can overlap panel area)
-        # Only reserve panel space on primary monitor (usually the one containing 0,0)
-        if [[ $mx -eq 0 && $my -eq 0 ]]; then
-            # Panel auto-hides but reserve its space in height calculation
-            usable_h=$((mh - panel_height))
-        else
-            # No panel on this monitor - use full monitor height
-            usable_h=$mh
-        fi
+        # No height reduction needed since panel hides automatically
+        usable_h=$mh
     else
         # Panel reserves space - start windows below it and reduce height
-        # Only apply panel height on primary monitor (usually the one containing 0,0)
-        if [[ $mx -eq 0 && $my -eq 0 ]]; then
+        if [[ "$is_primary" == "true" ]]; then
             # Panel at top reserves space, so start windows below it
             usable_y=$((my + panel_height))
             usable_h=$((mh - panel_height))
@@ -318,194 +424,7 @@ get_visible_windows_on_monitor() {
     done
 }
 
-# Auto-layout functions for different window counts
-auto_layout_1_window() {
-    local id="$1"
-    get_screen_info
-    local gap=$GAP
-    local panel_height=$PANEL_HEIGHT
-    local usable_w=$((SCREEN_W - gap * 2))
-    local usable_h=$((SCREEN_H - panel_height - gap * 2))
-    
-    # Maximize with gaps
-    apply_geometry "$id" $gap $((panel_height + gap)) $usable_w $usable_h
-}
-
-auto_layout_2_windows() {
-    local layout="$1"
-    shift
-    local ids=("$@")
-    get_screen_info
-    local gap=$GAP
-    local panel_height=$PANEL_HEIGHT
-    local usable_w=$((SCREEN_W - gap * 3))
-    local usable_h=$((SCREEN_H - panel_height - gap * 2))
-    
-    case "$layout" in
-        equal)
-            # 50/50 split
-            local w=$((usable_w / 2))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $usable_h
-            ;;
-        primary-secondary)
-            # 70/30 split
-            local w1=$((usable_w * 70 / 100))
-            local w2=$((usable_w - w1))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $usable_h
-            ;;
-        secondary-primary)
-            # 30/70 split
-            local w1=$((usable_w * 30 / 100))
-            local w2=$((usable_w - w1))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $usable_h
-            ;;
-    esac
-}
-
-auto_layout_3_windows() {
-    local layout="$1"
-    shift
-    local ids=("$@")
-    get_screen_info
-    local gap=$GAP
-    local panel_height=$PANEL_HEIGHT
-    local usable_w=$((SCREEN_W - gap * 4))
-    local usable_h=$((SCREEN_H - panel_height - gap * 2))
-    
-    case "$layout" in
-        main-two-side)
-            # One left half, two stacked on right
-            local w1=$((usable_w / 2))
-            local w2=$((usable_w - w1))
-            local h2=$((usable_h / 2))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $((h2 - gap / 2))
-            apply_geometry "${ids[2]}" $((gap * 2 + w1)) $((panel_height + gap * 2 + h2)) $w2 $((h2 - gap / 2))
-            ;;
-        three-columns)
-            # Three equal columns
-            local w=$((usable_w / 3))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $usable_h
-            apply_geometry "${ids[2]}" $((gap * 3 + w * 2)) $((panel_height + gap)) $w $usable_h
-            ;;
-        center-sidebars)
-            # 20/60/20 split
-            local w1=$((usable_w * 20 / 100))
-            local w2=$((usable_w * 60 / 100))
-            local w3=$((usable_w - w1 - w2))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $usable_h
-            apply_geometry "${ids[2]}" $((gap * 3 + w1 + w2)) $((panel_height + gap)) $w3 $usable_h
-            ;;
-    esac
-}
-
-auto_layout_4_windows() {
-    local layout="$1"
-    shift
-    local ids=("$@")
-    get_screen_info
-    local gap=$GAP
-    local panel_height=$PANEL_HEIGHT
-    
-    case "$layout" in
-        grid)
-            # 2x2 grid
-            local usable_w=$((SCREEN_W - gap * 3))
-            local usable_h=$((SCREEN_H - panel_height - gap * 3))
-            local w=$((usable_w / 2))
-            local h=$((usable_h / 2))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $h
-            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $h
-            apply_geometry "${ids[2]}" $gap $((panel_height + gap * 2 + h)) $w $h
-            apply_geometry "${ids[3]}" $((gap * 2 + w)) $((panel_height + gap * 2 + h)) $w $h
-            ;;
-        main-three-side)
-            # One left half, three stacked on right
-            local usable_w=$((SCREEN_W - gap * 3))
-            local usable_h=$((SCREEN_H - panel_height - gap * 2))
-            local w1=$((usable_w / 2))
-            local w2=$((usable_w - w1))
-            local h2=$((usable_h / 3))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $usable_h
-            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $((h2 - gap * 2 / 3))
-            apply_geometry "${ids[2]}" $((gap * 2 + w1)) $((panel_height + gap + h2 + gap / 3)) $w2 $((h2 - gap * 2 / 3))
-            apply_geometry "${ids[3]}" $((gap * 2 + w1)) $((panel_height + gap + h2 * 2 + gap * 2 / 3)) $w2 $((h2 - gap * 2 / 3))
-            ;;
-        three-top-bottom)
-            # Three columns on top, one wide bottom (like 3-window center-sidebars + bottom bar)
-            local usable_w=$((SCREEN_W - gap * 4))
-            local usable_h=$((SCREEN_H - panel_height - gap * 3))
-            local h1=$((usable_h * 60 / 100))
-            local h2=$((usable_h - h1))
-            local w1=$((usable_w * 20 / 100))
-            local w2=$((usable_w * 60 / 100))
-            local w3=$((usable_w - w1 - w2))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w1 $h1
-            apply_geometry "${ids[1]}" $((gap * 2 + w1)) $((panel_height + gap)) $w2 $h1
-            apply_geometry "${ids[2]}" $((gap * 3 + w1 + w2)) $((panel_height + gap)) $w3 $h1
-            apply_geometry "${ids[3]}" $gap $((panel_height + gap * 2 + h1)) $((SCREEN_W - gap * 2)) $h2
-            ;;
-    esac
-}
-
-auto_layout_5_windows() {
-    local layout="$1"
-    shift
-    local ids=("$@")
-    get_screen_info
-    local gap=$GAP
-    local panel_height=$PANEL_HEIGHT
-    local usable_w=$((SCREEN_W - gap * 3))
-    local usable_h=$((SCREEN_H - panel_height - gap * 3))
-    
-    case "$layout" in
-        center-corners)
-            # One center, four corners
-            local corner_w=$((usable_w * 30 / 100))
-            local corner_h=$((usable_h * 40 / 100))
-            local center_w=$((usable_w - corner_w * 2 - gap * 2))
-            local center_h=$((usable_h - corner_h * 2 - gap * 2))
-            local center_x=$((gap + corner_w + gap))
-            local center_y=$((panel_height + gap + corner_h + gap))
-            
-            # Center window
-            apply_geometry "${ids[0]}" $center_x $center_y $center_w $center_h
-            # Corners
-            apply_geometry "${ids[1]}" $gap $((panel_height + gap)) $corner_w $corner_h
-            apply_geometry "${ids[2]}" $((SCREEN_W - gap - corner_w)) $((panel_height + gap)) $corner_w $corner_h
-            apply_geometry "${ids[3]}" $gap $((SCREEN_H - gap - corner_h)) $corner_w $corner_h
-            apply_geometry "${ids[4]}" $((SCREEN_W - gap - corner_w)) $((SCREEN_H - gap - corner_h)) $corner_w $corner_h
-            ;;
-        two-three-columns)
-            # 2 windows on left, 3 on right
-            local w=$((usable_w / 2))
-            local h_left=$((usable_h / 2))
-            local h_right=$((usable_h / 3))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $((h_left - gap / 2))
-            apply_geometry "${ids[1]}" $gap $((panel_height + gap * 2 + h_left)) $w $((h_left - gap / 2))
-            apply_geometry "${ids[2]}" $((gap * 2 + w)) $((panel_height + gap)) $w $((h_right - gap * 2 / 3))
-            apply_geometry "${ids[3]}" $((gap * 2 + w)) $((panel_height + gap + h_right + gap / 3)) $w $((h_right - gap * 2 / 3))
-            apply_geometry "${ids[4]}" $((gap * 2 + w)) $((panel_height + gap + h_right * 2 + gap * 2 / 3)) $w $((h_right - gap * 2 / 3))
-            ;;
-        grid-wide-bottom)
-            # 2x2 grid on top, one wide on bottom
-            local h1=$((usable_h * 60 / 100))
-            local h2=$((usable_h - h1 - gap))
-            local w=$((usable_w / 2))
-            local h_grid=$((h1 / 2))
-            apply_geometry "${ids[0]}" $gap $((panel_height + gap)) $w $((h_grid - gap / 2))
-            apply_geometry "${ids[1]}" $((gap * 2 + w)) $((panel_height + gap)) $w $((h_grid - gap / 2))
-            apply_geometry "${ids[2]}" $gap $((panel_height + gap + h_grid + gap / 2)) $w $((h_grid - gap / 2))
-            apply_geometry "${ids[3]}" $((gap * 2 + w)) $((panel_height + gap + h_grid + gap / 2)) $w $((h_grid - gap / 2))
-            apply_geometry "${ids[4]}" $gap $((panel_height + gap * 2 + h1)) $((SCREEN_W - gap * 2)) $h2
-            ;;
-    esac
-}
+# Legacy auto-layout functions removed - now using atomic functions with proper monitor support
 
 # Single-monitor meta-layout helper functions for auto-layout consistency
 apply_meta_maximize_single_monitor() {
@@ -516,9 +435,13 @@ apply_meta_maximize_single_monitor() {
     local layout_area=$(get_monitor_layout_area "$monitor")
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     local gap=$GAP
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
     
-    # Maximize first window, minimize others
-    apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2))
+    # Maximize first window with decoration space, minimize others
+    local final_w=$((usable_w - gap * 2 - decoration_w))
+    local final_h=$((usable_h - gap * 2 - decoration_h))
+    apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $final_w $final_h
     for ((i=1; i<${#window_list[@]}; i++)); do
         xdotool windowminimize "${window_list[i]}" 2>/dev/null
     done
@@ -533,10 +456,12 @@ apply_meta_columns_single_monitor() {
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     
     local gap=$GAP
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
     local final_x=$((usable_x + gap))
     local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2))
-    local final_h=$((usable_h - gap * 2))
+    local final_w=$((usable_w - gap * 2 - decoration_w))
+    local final_h=$((usable_h - gap * 2 - decoration_h))
     
     local num_windows=${#window_list[@]}
     local available_w=$((final_w - gap * (num_windows - 1)))
@@ -558,27 +483,31 @@ apply_meta_main_sidebar_single_monitor() {
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     
     local gap=$GAP
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
     local final_x=$((usable_x + gap))
     local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2))
-    local final_h=$((usable_h - gap * 2))
+    local final_w=$((usable_w - gap * 2 - decoration_w))
+    local final_h=$((usable_h - gap * 2 - decoration_h))  # Account for window decorations in height only
     
     local num_windows=${#window_list[@]}
-    local available_w=$((final_w - gap * 2))  # Gap between main and sidebar
+    local gap_between=$((gap + decoration_w))  # Gap + decoration between main and sidebar
+    local available_w=$((final_w - gap_between))  # Total width minus gap between windows
     local main_w=$((available_w * main_width_percent / 100))
     local sidebar_w=$((available_w - main_w))
-    local sidebar_x=$((final_x + main_w + gap * 2))
+    local sidebar_x=$((final_x + main_w + gap_between))
     
     # Position main window
     apply_geometry "${window_list[0]}" $final_x $final_y $main_w $final_h
     
-    # Position sidebar windows (stacked)
+    # Position sidebar windows (stacked) - account for decorations in vertical spacing
     local sidebar_windows=$((num_windows - 1))
-    local available_sidebar_h=$((final_h - gap * 4 * (sidebar_windows - 1)))
+    local gap_vertical=$((gap + decoration_h))  # Gap + decoration between stacked windows
+    local available_sidebar_h=$((final_h - gap_vertical * (sidebar_windows - 1)))
     local sidebar_h=$((available_sidebar_h / sidebar_windows))
     
     for ((i=1; i<num_windows; i++)); do
-        local sidebar_y=$((final_y + (i - 1) * (sidebar_h + gap * 4)))
+        local sidebar_y=$((final_y + (i - 1) * (sidebar_h + gap_vertical)))
         apply_geometry "${window_list[i]}" $sidebar_x $sidebar_y $sidebar_w $sidebar_h
     done
 }
@@ -596,21 +525,21 @@ apply_meta_grid_single_monitor() {
     local rows=$(( (num_windows + cols - 1) / cols ))
     
     local gap=$GAP
-    local final_x=$((usable_x + gap))
-    local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2))
-    local final_h=$((usable_h - gap * 2))
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
+    local gap_vertical=$((gap + decoration_h))  # Gap + decoration for vertical spacing
     
-    local available_w=$((final_w - gap * (cols - 1)))
-    local available_h=$((final_h - gap * 4 * (rows - 1)))
+    # Account for gaps and decorations between rows
+    local available_w=$((usable_w - gap * (cols + 1)))  # Left, right, and between columns
+    local available_h=$((usable_h - gap * 2 - gap_vertical * (rows - 1) - decoration_h))  # Top/bottom gaps, vertical gaps, decoration
     local cell_w=$((available_w / cols))
     local cell_h=$((available_h / rows))
     
     for ((i=0; i<num_windows; i++)); do
         local col=$((i % cols))
         local row=$((i / cols))
-        local x=$((final_x + col * (cell_w + gap)))
-        local y=$((final_y + row * (cell_h + gap * 4)))
+        local x=$((usable_x + gap + col * (cell_w + gap)))
+        local y=$((usable_y + gap + row * (cell_h + gap_vertical)))
         apply_geometry "${window_list[i]}" $x $y $cell_w $cell_h
     done
 }
@@ -625,18 +554,21 @@ apply_meta_topbar_main_single_monitor() {
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     
     local gap=$GAP
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
     local final_x=$((usable_x + gap))
     local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2))
-    local final_h=$((usable_h - gap * 2))
+    local final_w=$((usable_w - gap * 2 - decoration_w))
+    local final_h=$((usable_h - gap * 2 - decoration_h))  # Account for decorations in height only
     
     local num_windows=${#window_list[@]}
     
-    # Calculate topbar and main heights with 4x gap safety margin between them
-    local available_h=$((final_h - gap * 4))  # Use 4x gap for safety between topbar and main
+    # Calculate topbar and main heights with gap and decoration between them
+    local gap_vertical=$((gap + decoration_h))  # Gap + decoration between topbar and main
+    local available_h=$((final_h - gap_vertical))  # Available height minus vertical gap
     local topbar_h=$((available_h * topbar_height_percent / 100))
     local main_h=$((available_h - topbar_h))
-    local main_y=$((final_y + topbar_h + gap * 4))
+    local main_y=$((final_y + topbar_h + gap_vertical))
     
     # Position main window (last window) - takes full width at bottom
     local main_window_index=$((num_windows - 1))
@@ -653,6 +585,46 @@ apply_meta_topbar_main_single_monitor() {
             apply_geometry "${window_list[i]}" $topbar_x $final_y $topbar_column_w $topbar_h
         done
     fi
+}
+
+apply_meta_center_corners_single_monitor() {
+    local monitor="$1"
+    shift
+    local window_list=("$@")
+    
+    local layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+    
+    local gap=$GAP
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
+    
+    # Account for decorations in height calculation only
+    local gap_vertical=$((gap + decoration_h))  # Gap + decoration for vertical spacing
+    local available_w=$((usable_w - gap * 4))  # Left, right, and 2 side gaps
+    local available_h=$((usable_h - gap * 2 - gap_vertical * 2 - decoration_h))  # Top/bottom gaps + 2 vertical decoration gaps
+    
+    local corner_w=$((available_w * 30 / 100))
+    local corner_h=$((available_h * 40 / 100))
+    local center_w=$((available_w - corner_w * 2))
+    local center_h=$((available_h - corner_h * 2))
+    
+    # Calculate positions (no decoration offset in positioning)
+    local center_x=$((usable_x + gap + corner_w + gap))
+    local center_y=$((usable_y + gap + corner_h + gap_vertical))
+    
+    # Position center window first (ids[0])
+    apply_geometry "${window_list[0]}" $center_x $center_y $center_w $center_h
+    
+    # Position corner windows
+    # Top corners (ids[1], ids[2])
+    apply_geometry "${window_list[1]}" $((usable_x + gap)) $((usable_y + gap)) $corner_w $corner_h
+    apply_geometry "${window_list[2]}" $((usable_x + usable_w - gap - corner_w)) $((usable_y + gap)) $corner_w $corner_h
+    
+    # Bottom corners (ids[3], ids[4]) - account for decoration in vertical spacing
+    local bottom_corner_y=$((usable_y + gap + corner_h + gap_vertical + center_h + gap_vertical))
+    apply_geometry "${window_list[3]}" $((usable_x + gap)) $bottom_corner_y $corner_w $corner_h
+    apply_geometry "${window_list[4]}" $((usable_x + usable_w - gap - corner_w)) $bottom_corner_y $corner_w $corner_h
 }
 
 # Main auto-layout function (monitor-aware)
@@ -746,7 +718,7 @@ auto_layout_monitor_1_window() {
     local gap=$GAP
     local final_x=$((usable_x + gap))
     local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2))
+    local final_w=$((usable_w - gap * 2 - decoration_w))
     local final_h=$((usable_h - gap * 2))
     apply_geometry "$id" $final_x $final_y $final_w $final_h
 }
@@ -760,39 +732,16 @@ auto_layout_monitor_2_windows() {
     
     case "$layout" in
         equal)
-            # 50/50 split with gaps all around
-            local gap=$GAP
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 3))  # Remove left, right, and middle gaps
-            local final_h=$((usable_h - gap * 2))  # Remove top and bottom gaps
-            local w=$((final_w / 2))
-            apply_geometry "${ids[0]}" $final_x $final_y $w $final_h
-            apply_geometry "${ids[1]}" $((final_x + w + gap)) $final_y $w $final_h
+            # 50/50 split - use columns atomic function
+            apply_meta_columns_single_monitor "$monitor" "${ids[@]}"
             ;;
         primary-secondary)
-            # 70/30 split with gaps all around
-            local gap=$GAP
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 3))  # Remove left, right, and middle gaps
-            local final_h=$((usable_h - gap * 2))  # Remove top and bottom gaps
-            local w1=$((final_w * 70 / 100))
-            local w2=$((final_w - w1))
-            apply_geometry "${ids[0]}" $final_x $final_y $w1 $final_h
-            apply_geometry "${ids[1]}" $((final_x + w1 + gap)) $final_y $w2 $final_h
+            # 70/30 split - use main-sidebar atomic function
+            apply_meta_main_sidebar_single_monitor "$monitor" 70 "${ids[@]}"
             ;;
         secondary-primary)
-            # 30/70 split with gaps all around
-            local gap=$GAP
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 3))  # Remove left, right, and middle gaps
-            local final_h=$((usable_h - gap * 2))  # Remove top and bottom gaps
-            local w1=$((final_w * 30 / 100))
-            local w2=$((final_w - w1))
-            apply_geometry "${ids[0]}" $final_x $final_y $w1 $final_h
-            apply_geometry "${ids[1]}" $((final_x + w1 + gap)) $final_y $w2 $final_h
+            # 30/70 split - use main-sidebar atomic function  
+            apply_meta_main_sidebar_single_monitor "$monitor" 30 "${ids[@]}"
             ;;
     esac
 }
@@ -806,56 +755,16 @@ auto_layout_monitor_3_windows() {
     
     case "$layout" in
         main-two-side)
-            # One left half, two stacked on right - clean gap logic with perfect alignment
-            local gap=$GAP
-            
-            # Calculate outer boundaries (with gaps from screen edges)
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 2))  # Remove left and right outer gaps
-            local final_h=$((usable_h - gap * 2))  # Remove top and bottom outer gaps
-            
-            # Calculate widths: left window (50%) + gap + right side (50%)
-            local left_w=$(((final_w - gap) / 2))
-            local right_w=$((final_w - left_w - gap))
-            local right_x=$((final_x + left_w + gap))
-            
-            # Calculate heights: right side split in half with larger gap to prevent app overlap
-            local right_h=$(((final_h - gap * 4) / 2))  # Use 4x gap for safety
-            local top_right_y=$final_y
-            local bottom_right_y=$((final_y + right_h + gap * 4))
-            
-            # Apply positioning - perfect alignment!
-            apply_geometry "${ids[0]}" $final_x $final_y $left_w $final_h              # Left: full height
-            apply_geometry "${ids[1]}" $right_x $top_right_y $right_w $right_h         # Top-right: half height
-            apply_geometry "${ids[2]}" $right_x $bottom_right_y $right_w $right_h      # Bottom-right: half height
+            # One left half, two stacked on right - use main-sidebar atomic function
+            apply_meta_main_sidebar_single_monitor "$monitor" 50 "${ids[@]}"
             ;;
         three-columns)
-            # Three equal columns with gaps all around
-            local gap=$GAP
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 2))  # Remove left and right outer gaps
-            local final_h=$((usable_h - gap * 2))  # Remove top and bottom outer gaps
-            local w=$(((final_w - gap * 2) / 3))  # 2 gaps between 3 columns
-            apply_geometry "${ids[0]}" $final_x $final_y $w $final_h
-            apply_geometry "${ids[1]}" $((final_x + w + gap)) $final_y $w $final_h
-            apply_geometry "${ids[2]}" $((final_x + (w + gap) * 2)) $final_y $w $final_h
+            # Three equal columns - use columns atomic function
+            apply_meta_columns_single_monitor "$monitor" "${ids[@]}"
             ;;
         center-sidebars)
-            # 20/60/20 split with gaps all around
-            local gap=$GAP
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 2))  # Remove left and right outer gaps
-            local final_h=$((usable_h - gap * 2))  # Remove top and bottom outer gaps
-            local available_w=$((final_w - gap * 2))  # Remove 2 gaps between 3 windows
-            local w1=$((available_w * 20 / 100))
-            local w2=$((available_w * 60 / 100))
-            local w3=$((available_w - w1 - w2))
-            apply_geometry "${ids[0]}" $final_x $final_y $w1 $final_h
-            apply_geometry "${ids[1]}" $((final_x + w1 + gap)) $final_y $w2 $final_h
-            apply_geometry "${ids[2]}" $((final_x + w1 + gap + w2 + gap)) $final_y $w3 $final_h
+            # 20/60/20 split - use columns atomic function (it handles any number equally)
+            apply_meta_columns_single_monitor "$monitor" "${ids[@]}"
             ;;
     esac
 }
@@ -869,39 +778,16 @@ auto_layout_monitor_4_windows() {
     
     case "$layout" in
         grid)
-            # 2x2 grid with gaps between windows
-            local gap=$GAP
-            local w=$(((usable_w - gap) / 2))  # Account for gap between columns
-            local h=$(((usable_h - gap) / 2))  # Account for gap between rows
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w $h
-            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $h
-            apply_geometry "${ids[2]}" $usable_x $((usable_y + h + gap)) $w $h
-            apply_geometry "${ids[3]}" $((usable_x + w + gap)) $((usable_y + h + gap)) $w $h
+            # 2x2 grid - use grid atomic function
+            apply_meta_grid_single_monitor "$monitor" "${ids[@]}"
             ;;
         main-three-side)
-            # One left half, three stacked on right with gaps
-            local gap=$GAP
-            local w1=$(((usable_w - gap) / 2))
-            local w2=$((usable_w - w1 - gap))
-            local h2=$(((usable_h - gap * 2) / 3))  # 2 gaps between 3 stacked windows
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $usable_h
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $h2
-            apply_geometry "${ids[2]}" $((usable_x + w1 + gap)) $((usable_y + h2 + gap)) $w2 $h2
-            apply_geometry "${ids[3]}" $((usable_x + w1 + gap)) $((usable_y + (h2 + gap) * 2)) $w2 $h2
+            # One left half, three stacked on right - use main-sidebar atomic function
+            apply_meta_main_sidebar_single_monitor "$monitor" 50 "${ids[@]}"
             ;;
         three-top-bottom)
-            # Three columns on top, one wide bottom with gaps
-            local gap=$GAP
-            local h1=$(((usable_h - gap) * 60 / 100))
-            local h2=$((usable_h - h1 - gap))
-            local total_gap=$((gap * 2))  # 2 gaps between 3 top windows
-            local w1=$(((usable_w - total_gap) * 20 / 100))
-            local w2=$(((usable_w - total_gap) * 60 / 100))
-            local w3=$((usable_w - w1 - w2 - total_gap))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w1 $h1
-            apply_geometry "${ids[1]}" $((usable_x + w1 + gap)) $usable_y $w2 $h1
-            apply_geometry "${ids[2]}" $((usable_x + w1 + w2 + total_gap)) $usable_y $w3 $h1
-            apply_geometry "${ids[3]}" $usable_x $((usable_y + h1 + gap)) $usable_w $h2
+            # Three columns on top, one wide bottom - use topbar-main atomic function
+            apply_meta_topbar_main_single_monitor "$monitor" 60 "${ids[@]}"
             ;;
     esac
 }
@@ -915,47 +801,16 @@ auto_layout_monitor_5_windows() {
     
     case "$layout" in
         center-corners)
-            # One center, four corners with gaps
-            local gap=$GAP
-            local corner_w=$(((usable_w - gap * 2) * 30 / 100))
-            local corner_h=$(((usable_h - gap * 2) * 40 / 100))
-            local center_w=$((usable_w - corner_w * 2 - gap * 2))
-            local center_h=$((usable_h - corner_h * 2 - gap * 2))
-            local center_x=$((usable_x + corner_w + gap))
-            local center_y=$((usable_y + corner_h + gap))
-            
-            # Center window
-            apply_geometry "${ids[0]}" $center_x $center_y $center_w $center_h
-            # Corners
-            apply_geometry "${ids[1]}" $usable_x $usable_y $corner_w $corner_h
-            apply_geometry "${ids[2]}" $((usable_x + usable_w - corner_w)) $usable_y $corner_w $corner_h
-            apply_geometry "${ids[3]}" $usable_x $((usable_y + usable_h - corner_h)) $corner_w $corner_h
-            apply_geometry "${ids[4]}" $((usable_x + usable_w - corner_w)) $((usable_y + usable_h - corner_h)) $corner_w $corner_h
+            # One center, four corners - use center-corners atomic function
+            apply_meta_center_corners_single_monitor "$monitor" "${ids[@]}"
             ;;
         two-three-columns)
-            # 2 windows on left, 3 on right with gaps
-            local gap=$GAP
-            local w=$(((usable_w - gap) / 2))
-            local h_left=$(((usable_h - gap) / 2))
-            local h_right=$(((usable_h - gap * 2) / 3))
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w $h_left
-            apply_geometry "${ids[1]}" $usable_x $((usable_y + h_left + gap)) $w $h_left
-            apply_geometry "${ids[2]}" $((usable_x + w + gap)) $usable_y $w $h_right
-            apply_geometry "${ids[3]}" $((usable_x + w + gap)) $((usable_y + h_right + gap)) $w $h_right
-            apply_geometry "${ids[4]}" $((usable_x + w + gap)) $((usable_y + (h_right + gap) * 2)) $w $h_right
+            # 2 windows on left, 3 on right - use main-sidebar with 40% main area
+            apply_meta_main_sidebar_single_monitor "$monitor" 40 "${ids[@]}"
             ;;
         grid-wide-bottom)
-            # 2x2 grid on top, one wide on bottom with gaps
-            local gap=$GAP
-            local h1=$(((usable_h - gap * 2) * 60 / 100))  # Account for gaps above and below grid
-            local h2=$((usable_h - h1 - gap))
-            local w=$(((usable_w - gap) / 2))
-            local h_grid=$(((h1 - gap) / 2))  # Gap between grid rows
-            apply_geometry "${ids[0]}" $usable_x $usable_y $w $h_grid
-            apply_geometry "${ids[1]}" $((usable_x + w + gap)) $usable_y $w $h_grid
-            apply_geometry "${ids[2]}" $usable_x $((usable_y + h_grid + gap)) $w $h_grid
-            apply_geometry "${ids[3]}" $((usable_x + w + gap)) $((usable_y + h_grid + gap)) $w $h_grid
-            apply_geometry "${ids[4]}" $usable_x $((usable_y + h1 + gap)) $usable_w $h2
+            # 2x2 grid on top, one wide on bottom - use topbar-main with 60% topbar
+            apply_meta_topbar_main_single_monitor "$monitor" 60 "${ids[@]}"
             ;;
     esac
 }
@@ -1076,52 +931,38 @@ master_stack_layout() {
         return 1
     fi
     
+    # Group windows by monitor and apply master-stack layout to each monitor
     get_screen_info
-    local gap=$GAP
-    local panel_height=$PANEL_HEIGHT
-    local usable_w=$((SCREEN_W - gap * 3))
-    local usable_h=$((SCREEN_H - panel_height - gap * 2))
+    local monitors_with_windows=()
     
-    # Master window gets 60% of space, stack gets 40%
-    local master_id="${windows[0]}"
-    local stack_ids=("${windows[@]:1}")
+    # Group windows by monitor
+    for monitor in "${MONITORS[@]}"; do
+        local windows_on_monitor=()
+        for window_id in "${windows[@]}"; do
+            local window_monitor=$(get_window_monitor "$window_id")
+            if [[ "$window_monitor" == "$monitor" ]]; then
+                windows_on_monitor+=("$window_id")
+            fi
+        done
+        
+        if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
+            monitors_with_windows+=("$monitor")
+            local num_windows=${#windows_on_monitor[@]}
+            
+            IFS=':' read -r name mx my mw mh <<< "$monitor"
+            echo "Monitor $name: Applying master-stack ($orientation) to $num_windows window(s)"
+            
+            if [[ "$orientation" == "vertical" ]]; then
+                # Master on left, stack on right - use main-sidebar atomic function
+                apply_meta_main_sidebar_single_monitor "$monitor" 60 "${windows_on_monitor[@]}"
+            else
+                # Master on top, stack on bottom - use topbar-main atomic function  
+                apply_meta_topbar_main_single_monitor "$monitor" 60 "${windows_on_monitor[@]}"
+            fi
+        fi
+    done
     
-    case "$orientation" in
-        vertical)
-            # Master on left, stack on right
-            local master_w=$((usable_w * 60 / 100))
-            local stack_w=$((usable_w - master_w))
-            local stack_h=$((usable_h / ${#stack_ids[@]}))
-            
-            # Position master
-            apply_geometry "$master_id" $gap $((panel_height + gap)) $master_w $usable_h
-            
-            # Position stack
-            local stack_y=$((panel_height + gap))
-            for stack_id in "${stack_ids[@]}"; do
-                apply_geometry "$stack_id" $((gap * 2 + master_w)) $stack_y $stack_w $((stack_h - gap))
-                stack_y=$((stack_y + stack_h))
-            done
-            ;;
-        horizontal)
-            # Master on top, stack on bottom
-            local master_h=$((usable_h * 60 / 100))
-            local stack_h=$((usable_h - master_h))
-            local stack_w=$((usable_w / ${#stack_ids[@]}))
-            
-            # Position master
-            apply_geometry "$master_id" $gap $((panel_height + gap)) $usable_w $master_h
-            
-            # Position stack
-            local stack_x=$gap
-            for stack_id in "${stack_ids[@]}"; do
-                apply_geometry "$stack_id" $stack_x $((panel_height + gap * 2 + master_h)) $((stack_w - gap)) $stack_h
-                stack_x=$((stack_x + stack_w))
-            done
-            ;;
-    esac
-    
-    echo "Master-stack layout ($orientation) applied to $count windows"
+    echo "Master-stack layout ($orientation) applied to ${#monitors_with_windows[@]} monitor(s)"
 }
 
 # Focus navigation
@@ -1204,53 +1045,56 @@ apply_preset() {
     local half_w=$((usable_w / 2))
     local half_h=$((usable_h / 2))
     
+    local gap=$GAP
+    local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
+    
     case "$preset" in
         ul) # Upper left
-            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $usable_x $usable_y $w $h
+            read -r w h <<< "$(ensure_minimum_size $((half_w - gap)) $((half_h - gap - decoration_h)))"
+            apply_geometry "$id" $((usable_x + gap)) $((usable_y + gap)) $w $h
             ;;
         ur) # Upper right
-            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $((usable_x + half_w)) $usable_y $w $h
+            read -r w h <<< "$(ensure_minimum_size $((half_w - gap)) $((half_h - gap - decoration_h)))"
+            apply_geometry "$id" $((usable_x + half_w + gap)) $((usable_y + gap)) $w $h
             ;;
         ll) # Lower left
-            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $usable_x $((usable_y + half_h)) $w $h
+            read -r w h <<< "$(ensure_minimum_size $((half_w - gap)) $((half_h - gap - decoration_h)))"
+            apply_geometry "$id" $((usable_x + gap)) $((usable_y + half_h + gap)) $w $h
             ;;
         lr) # Lower right
-            read -r w h <<< "$(ensure_minimum_size $half_w $half_h)"
-            apply_geometry "$id" $((usable_x + half_w)) $((usable_y + half_h)) $w $h
+            read -r w h <<< "$(ensure_minimum_size $((half_w - gap)) $((half_h - gap - decoration_h)))"
+            apply_geometry "$id" $((usable_x + half_w + gap)) $((usable_y + half_h + gap)) $w $h
             ;;
         c) # Center
-            local center_w=$((usable_w * 2 / 3))
-            local center_h=$((usable_h * 2 / 3))
+            local center_w=$((usable_w * 2 / 3 - gap * 2))
+            local center_h=$((usable_h * 2 / 3 - gap * 2 - decoration_h))
             read -r center_w center_h <<< "$(ensure_minimum_size $center_w $center_h)"
-            local center_x=$((usable_x + (usable_w - center_w) / 2))
-            local center_y=$((usable_y + (usable_h - center_h) / 2))
+            local center_x=$((usable_x + gap + (usable_w - center_w - gap * 2) / 2))
+            local center_y=$((usable_y + gap + (usable_h - center_h - gap * 2 - decoration) / 2))
             apply_geometry "$id" $center_x $center_y $center_w $center_h
             ;;
         left) # Left half
-            read -r w h <<< "$(ensure_minimum_size $half_w $usable_h)"
-            apply_geometry "$id" $usable_x $usable_y $w $h
+            read -r w h <<< "$(ensure_minimum_size $((half_w - gap)) $((usable_h - gap * 2 - decoration_h)))"
+            apply_geometry "$id" $((usable_x + gap)) $((usable_y + gap)) $w $h
             ;;
         right) # Right half
-            read -r w h <<< "$(ensure_minimum_size $half_w $usable_h)"
-            apply_geometry "$id" $((usable_x + half_w)) $usable_y $w $h
+            read -r w h <<< "$(ensure_minimum_size $((half_w - gap)) $((usable_h - gap * 2 - decoration_h)))"
+            apply_geometry "$id" $((usable_x + half_w + gap)) $((usable_y + gap)) $w $h
             ;;
         top) # Top half
-            read -r w h <<< "$(ensure_minimum_size $usable_w $half_h)"
-            apply_geometry "$id" $usable_x $usable_y $w $h
+            read -r w h <<< "$(ensure_minimum_size $((usable_w - gap * 2)) $((half_h - gap - decoration_h)))"
+            apply_geometry "$id" $((usable_x + gap)) $((usable_y + gap)) $w $h
             ;;
         bottom) # Bottom half
-            read -r w h <<< "$(ensure_minimum_size $usable_w $half_h)"
-            apply_geometry "$id" $usable_x $((usable_y + half_h)) $w $h
+            read -r w h <<< "$(ensure_minimum_size $((usable_w - gap * 2)) $((half_h - gap - decoration_h)))"
+            apply_geometry "$id" $((usable_x + gap)) $((usable_y + half_h + gap)) $w $h
             ;;
         maximize) # Maximize (with gaps)
-            local gap=$GAP
             local final_x=$((usable_x + gap))
             local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 2))
-            local final_h=$((usable_h - gap * 2))
+            local final_w=$((usable_w - gap * 2 - decoration_w))
+            local final_h=$((usable_h - gap * 2 - decoration_h))
             read -r w h <<< "$(ensure_minimum_size $final_w $final_h)"
             apply_geometry "$id" $final_x $final_y $w $h
             ;;
@@ -1819,7 +1663,7 @@ apply_meta_maximize() {
     local gap=$GAP
     local final_x=$((usable_x + gap))
     local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2))
+    local final_w=$((usable_w - gap * 2 - decoration_w))
     local final_h=$((usable_h - gap * 2))
     apply_geometry "$first_window" $final_x $final_y $final_w $final_h
     
@@ -1854,7 +1698,7 @@ apply_meta_columns() {
         local gap=$GAP
         local final_x=$((usable_x + gap))
         local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2))
+        local final_w=$((usable_w - gap * 2 - decoration_w))
         local final_h=$((usable_h - gap * 2))
         
         local num_windows=${#window_list[@]}
@@ -1893,7 +1737,7 @@ apply_meta_rows() {
         local gap=$GAP
         local final_x=$((usable_x + gap))
         local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2))
+        local final_w=$((usable_w - gap * 2 - decoration_w))
         local final_h=$((usable_h - gap * 2))
         
         local num_windows=${#window_list[@]}
@@ -1936,21 +1780,20 @@ apply_meta_grid() {
         IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
         
         local gap=$GAP
-        local final_x=$((usable_x + gap))
-        local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2))
-        local final_h=$((usable_h - gap * 2))
+        local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
         
-        local available_w=$((final_w - gap * (cols - 1)))  # Use normal gap for horizontal spacing
-        local available_h=$((final_h - gap * 4 * (rows - 1)))  # Use 4x gap for vertical safety (prevents overlap)
+        # Account for decorations and gaps - top-down positioning
+        local available_w=$((usable_w - gap * (cols + 1)))  # Left, right, and between columns
+        local available_h=$((usable_h - gap * (rows + 1) - decoration * rows))  # Top, bottom, between rows, and decorations
         local cell_w=$((available_w / cols))
         local cell_h=$((available_h / rows))
         
         for ((i=0; i<num_windows; i++)); do
             local col=$((i % cols))
             local row=$((i / cols))
-            local x=$((final_x + col * (cell_w + gap)))  # Use normal gap between columns
-            local y=$((final_y + row * (cell_h + gap * 4)))  # Use 4x gap between rows (prevents overlap)
+            local x=$((usable_x + gap + col * (cell_w + gap)))
+            local y=$((usable_y + gap + row * (cell_h + gap)))
             apply_geometry "${window_list[i]}" $x $y $cell_w $cell_h
         done
     done
@@ -1982,7 +1825,9 @@ apply_meta_main_sidebar() {
             local layout_area=$(get_monitor_layout_area "$monitor")
             IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
             local gap=$GAP
-            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2))
+            local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
+            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2 - decoration_h))
             continue
         fi
         
@@ -1992,7 +1837,7 @@ apply_meta_main_sidebar() {
         local gap=$GAP
         local final_x=$((usable_x + gap))
         local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2))
+        local final_w=$((usable_w - gap * 2 - decoration_w))
         local final_h=$((usable_h - gap * 2))
         
         # Calculate main and sidebar widths with reasonable horizontal gap
@@ -2054,7 +1899,7 @@ apply_meta_center_sidebar() {
             local gap=$GAP
             local final_x=$((usable_x + gap))
             local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 2))
+            local final_w=$((usable_w - gap * 2 - decoration_w))
             local final_h=$((usable_h - gap * 2))
             
             # Use same logic as main-sidebar: main window at 75% width, sidebar takes rest
@@ -2077,7 +1922,7 @@ apply_meta_center_sidebar() {
         local gap=$GAP
         local final_x=$((usable_x + gap))
         local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2))
+        local final_w=$((usable_w - gap * 2 - decoration_w))
         local final_h=$((usable_h - gap * 2))
         
         # Calculate center and sidebar widths with reasonable horizontal gaps
@@ -2144,7 +1989,9 @@ apply_meta_topbar_main() {
             local layout_area=$(get_monitor_layout_area "$monitor")
             IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
             local gap=$GAP
-            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2))
+            local decoration_h=$DECORATION_HEIGHT
+    local decoration_w=$DECORATION_WIDTH
+            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2 - decoration_h))
             continue
         fi
         
@@ -2154,7 +2001,7 @@ apply_meta_topbar_main() {
         local gap=$GAP
         local final_x=$((usable_x + gap))
         local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2))
+        local final_w=$((usable_w - gap * 2 - decoration_w))
         local final_h=$((usable_h - gap * 2))
         
         # Calculate topbar and main heights with 4x gap safety margin between them
@@ -2195,75 +2042,97 @@ watch_daemon() {
 }
 
 watch_daemon_internal() {
-    # Event-driven daemon function - monitors X11 window events in real-time
-    local last_window_list=""
+    # Efficient event-driven daemon - monitors key X11 properties to avoid process explosion
+    echo "$(date): Efficient event-driven watch daemon started"
+    echo "$(date): Using combined monitoring approach to prevent resource exhaustion"
     
     # Trap signals for clean exit
-    trap 'echo "Watch daemon stopped"; kill $MONITOR_PID 2>/dev/null; exit 0' SIGINT SIGTERM
-    
-    echo "$(date): Event-driven watch daemon started"
-    echo "$(date): Monitoring X11 window events for instant response..."
+    local monitor_pids=()
+    trap 'echo "Watch daemon stopped"; for pid in "${monitor_pids[@]}"; do kill $pid 2>/dev/null; done; exit 0' SIGINT SIGTERM
     
     # Function to apply layout when window state changes
     apply_workspace_layout() {
-        local new_window_count
-        new_window_count=$(wmctrl -l | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | wc -l 2>/dev/null || echo "0")
+        local trigger_reason="$1"
         
-        if [[ $new_window_count -gt 0 ]]; then
-            # Get the last layout used on current workspace
-            local current_workspace
-            current_workspace=$(xdotool get_desktop 2>/dev/null || echo "0")
-            local workspace_layout
-            workspace_layout=$(get_workspace_meta_layout "$current_workspace")
-            
-            echo "$(date): Window event detected ($new_window_count windows) - applying layout: $workspace_layout"
-            
-            # Small delay to ensure window is fully ready
-            sleep 0.2
-            if [[ "$workspace_layout" == "auto" ]]; then
-                "$0" auto > /dev/null 2>&1
-            else
-                $0 $workspace_layout > /dev/null 2>&1
-            fi
+        local current_workspace
+        current_workspace=$(xdotool get_desktop 2>/dev/null || echo "0")
+        
+        local workspace_layout
+        workspace_layout=$(get_workspace_meta_layout "$current_workspace" 2>/dev/null)
+        
+        # If no layout set for workspace, use "auto" as fallback
+        if [[ -z "$workspace_layout" ]]; then
+            workspace_layout="auto"
+        fi
+        
+        echo "$(date): $trigger_reason - applying layout '$workspace_layout' to workspace $current_workspace"
+        
+        # Small delay to ensure window changes are complete
+        sleep 0.2
+        
+        # Parse layout command properly for meta layouts
+        if [[ "$workspace_layout" =~ ^meta[[:space:]](.+)$ ]]; then
+            # Meta layout - split into separate arguments
+            local meta_command="${BASH_REMATCH[1]}"
+            echo "$(date): Executing meta layout: $meta_command"
+            "$0" meta "$meta_command"
+        else
+            # Regular layout command
+            echo "$(date): Executing regular layout: $workspace_layout"
+            "$0" "$workspace_layout"
         fi
     }
     
-    # Use fast polling approach - more reliable in Qubes dom0
-    echo "$(date): Using fast polling for reliable window monitoring (0.3s interval)"
+    echo "$(date): Starting efficient X11 property monitoring"
     
-    while true; do
-        # Get detailed window list including states for comparison
-        local current_window_list
-        current_window_list=$(wmctrl -lG 2>/dev/null | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | sort)
-        
-        # Also include window states to detect minimize/maximize changes
-        local current_states=""
-        if command -v wmctrl >/dev/null 2>&1; then
-            # Get window states to detect minimization changes
-            while IFS= read -r window_id; do
-                if [[ -n "$window_id" ]]; then
-                    local state
-                    state=$(xprop -id "$window_id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED" || echo "NORMAL")
-                    current_states="${current_states}${window_id}:${state}\n"
-                fi
-            done < <(wmctrl -l 2>/dev/null | grep -v '^[^ ]* \-1 ' | grep -v 'Desktop$' | awk '{print $1}')
+    # Monitor window creation/destruction with _NET_CLIENT_LIST
+    echo "$(date): Monitoring window creation/destruction events"
+    xprop -spy -root _NET_CLIENT_LIST 2>/dev/null | while IFS= read -r line; do
+        if [[ -n "$line" && "$line" =~ _NET_CLIENT_LIST ]]; then
+            echo "$(date): Window list changed (create/destroy)"
+            apply_workspace_layout "Window list change"
         fi
-        
-        # Combine window list and states for comprehensive comparison
-        local combined_state="${current_window_list}|${current_states}"
-        
-        # Check if anything has changed (windows or states)
-        if [[ "$combined_state" != "$last_window_list" ]]; then
-            if [[ -n "$last_window_list" ]]; then
-                echo "$(date): Window state change detected - triggering layout"
-                apply_workspace_layout
+    done &
+    
+    local client_list_pid=$!
+    monitor_pids+=($client_list_pid)
+    
+    # Monitor window minimize/restore with _NET_CLIENT_LIST_STACKING
+    echo "$(date): Monitoring window stacking/state events"
+    xprop -spy -root _NET_CLIENT_LIST_STACKING 2>/dev/null | while IFS= read -r line; do
+        if [[ -n "$line" && "$line" =~ _NET_CLIENT_LIST_STACKING ]]; then
+            echo "$(date): Window stacking changed (minimize/restore/reorder)"
+            
+            # Brief delay to avoid rapid-fire during multi-window operations
+            sleep 0.1
+            apply_workspace_layout "Window stacking change"
+        fi
+    done &
+    
+    local stacking_pid=$!
+    monitor_pids+=($stacking_pid)
+    
+    # Optional: Monitor workspace changes if supported
+    if xprop -root _NET_CURRENT_DESKTOP >/dev/null 2>&1; then
+        echo "$(date): Monitoring workspace changes"
+        xprop -spy -root _NET_CURRENT_DESKTOP 2>/dev/null | while IFS= read -r line; do
+            if [[ -n "$line" && "$line" =~ _NET_CURRENT_DESKTOP ]]; then
+                echo "$(date): Workspace changed"
+                # Small delay to let workspace switch complete
+                sleep 0.3
+                apply_workspace_layout "Workspace change"
             fi
-            last_window_list="$combined_state"
-        fi
+        done &
         
-        # Fast polling for responsiveness
-        sleep 0.3
-    done
+        local workspace_pid=$!
+        monitor_pids+=($workspace_pid)
+    fi
+    
+    echo "$(date): Event-driven daemon initialized with ${#monitor_pids[@]} monitoring processes"
+    echo "$(date): Maximum resource usage: ${#monitor_pids[@]} background processes (vs potentially 100s with per-window monitoring)"
+    
+    # Wait for all monitoring processes
+    wait
 }
 
 # Main logic
@@ -2743,11 +2612,42 @@ case "${1:-}" in
                     echo "Panel auto-hide mode: ${PANEL_AUTOHIDE}"
                 fi
                 ;;
+            decoration-height)
+                if [[ -n "${3:-}" ]]; then
+                    if [[ "$3" =~ ^[0-9]+$ ]]; then
+                        sed -i "s/^DECORATION_HEIGHT=.*/DECORATION_HEIGHT=$3/" "$SETTINGS_FILE"
+                        echo "Window decoration height set to ${3}px"
+                    else
+                        echo "Error: Decoration height must be a number"
+                        exit 1
+                    fi
+                else
+                    echo "Current decoration height: ${DECORATION_HEIGHT}px"
+                fi
+                ;;
+            decoration-width)
+                if [[ -n "${3:-}" ]]; then
+                    if [[ "$3" =~ ^[0-9]+$ ]]; then
+                        sed -i "s/^DECORATION_WIDTH=.*/DECORATION_WIDTH=$3/" "$SETTINGS_FILE"
+                        echo "Window decoration width set to ${3}px"
+                    else
+                        echo "Error: Decoration width must be a number"
+                        exit 1
+                    fi
+                else
+                    echo "Current decoration width: ${DECORATION_WIDTH}px"
+                fi
+                ;;
+            decoration-detect)
+                auto_detect_decorations
+                ;;
             show)
                 echo "Current settings:"
                 echo "  Gap: ${GAP}px"
                 echo "  Panel height: ${PANEL_HEIGHT}px"
                 echo "  Panel auto-hide: ${PANEL_AUTOHIDE}"
+                echo "  Decoration height: ${DECORATION_HEIGHT}px"
+                echo "  Decoration width: ${DECORATION_WIDTH}px"
                 echo "  Min window width: ${MIN_WIDTH}px"
                 echo "  Min window height: ${MIN_HEIGHT}px"
                 echo ""
@@ -2765,6 +2665,8 @@ case "${1:-}" in
                 echo "  place-window config gap [SIZE]     Set or show gap size"
                 echo "  place-window config panel [SIZE]   Set or show panel height"
                 echo "  place-window config autohide [true/false]  Set panel auto-hide mode"
+                echo "  place-window config decoration-height [SIZE]  Set or show window decoration height"
+                echo "  place-window config decoration-width [SIZE]   Set or show window decoration width"
                 echo "  place-window config show           Show all settings"
                 ;;
         esac
@@ -2859,6 +2761,9 @@ Configuration commands:
   place-window config gap [SIZE]     Set or show gap size (default: 10px)
   place-window config panel [SIZE]   Set or show panel height (default: 32px)
   place-window config autohide [true/false]  Panel auto-hide mode
+  place-window config decoration-height [SIZE]  Set or show window decoration height
+  place-window config decoration-width [SIZE]   Set or show window decoration width
+  place-window config decoration-detect         Auto-detect decoration dimensions
   place-window config show           Show all current settings
 
 Examples:
@@ -2872,6 +2777,7 @@ Examples:
   place-window focus right        # Focus window to the right
   place-window auto-config 2 primary-secondary  # 70/30 split for 2 windows
   place-window config gap 15      # Set 15px gaps around windows
+  place-window config decoration-detect  # Auto-detect window decoration size
 
 Gap behavior:
   - All layouts maintain the configured gap around windows
