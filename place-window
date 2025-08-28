@@ -176,7 +176,7 @@ gather_monitor_windows() {
     local window_list=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && window_list+=("$line")
-    done < <(get_visible_windows_on_monitor "$monitor")
+    done < <(get_visible_windows_on_monitor_by_position "$monitor")
     
     printf '%s\n' "${window_list[@]}"
 }
@@ -510,9 +510,64 @@ get_visible_windows() {
     done
 }
 
-get_visible_windows_on_monitor() {
+# Get windows sorted by spatial position (left-to-right, top-to-bottom) instead of chronological order
+get_visible_windows_by_position() {
+    local current_desktop=$(xdotool get_desktop)
+    
+    # Get stacking order from X11 (bottom to top)
+    local stacking_order=()
+    local stacking_raw=$(xprop -root _NET_CLIENT_LIST_STACKING 2>/dev/null | grep "window id" | sed 's/.*window id # //; s/,//g')
+    if [[ -n "$stacking_raw" ]]; then
+        read -ra stacking_order <<< "$stacking_raw"
+    fi
+    
+    # Get all visible windows with their positions
+    local window_data=()
+    
+    # Use process substitution to avoid subshell
+    while IFS= read -r line; do
+        local id=$(echo "$line" | awk '{print $1}')
+        local desktop=$(echo "$line" | awk '{print $2}')
+        
+        # Skip windows not on current desktop
+        [[ "$desktop" != "$current_desktop" && "$desktop" != "-1" ]] && continue
+        
+        # Check if window is minimized or maximized
+        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED")
+        [[ -n "$state" ]] && continue
+        
+        # Skip panels, docks, and desktop
+        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            continue
+        fi
+        
+        # Get window geometry
+        local geom=$(get_window_geometry "$id")
+        if [[ -n "$geom" ]]; then
+            IFS=',' read -r x y w h <<< "$geom"
+            
+            # Find Z-order index (lower index = higher in stack)
+            local z_index=999
+            for ((i=0; i<${#stacking_order[@]}; i++)); do
+                if [[ "${stacking_order[i]}" == "$id" ]]; then
+                    z_index=$i
+                    break
+                fi
+            done
+            
+            # Store: "id:x:y:z_index"
+            window_data+=("$id:$x:$y:$z_index")
+        fi
+    done < <(wmctrl -l)
+    
+    # Sort by Y coordinate (top to bottom), then X coordinate (left to right), then Z-order
+    printf '%s\n' "${window_data[@]}" | sort -t: -k3,3n -k2,2n -k4,4n | cut -d: -f1
+}
+
+get_visible_windows_on_monitor_by_position() {
     local monitor="$1"
-    get_visible_windows | while read -r id; do
+    get_visible_windows_by_position | while read -r id; do
         local window_monitor=$(get_window_monitor "$id")
         if [[ "$window_monitor" == "$monitor" ]]; then
             echo "$id"
@@ -843,7 +898,7 @@ auto_layout_and_reset_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor "$monitor")
+    done < <(get_visible_windows_on_monitor_by_position "$monitor")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         IFS=':' read -r monitor_name rest <<< "$monitor"
@@ -885,7 +940,7 @@ auto_layout_all_monitors() {
         local windows_on_monitor=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && windows_on_monitor+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
+        done < <(get_visible_windows_on_monitor_by_position "$monitor")
         
         # Apply auto-layout and reset to this monitor (same as single monitor command)
         if auto_layout_and_reset_monitor "$monitor"; then
@@ -915,7 +970,7 @@ find_adjacent_windows() {
     IFS=',' read -r tx ty tw th <<< "$target_geom"
     
     local adjacent=()
-    local windows=($(get_visible_windows))
+    local windows=($(get_visible_windows_by_position))
     
     for id in "${windows[@]}"; do
         [[ "$id" == "$target_id" ]] && continue
@@ -1025,7 +1080,7 @@ master_stack_layout_current_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor "$current_monitor")
+    done < <(get_visible_windows_on_monitor_by_position "$current_monitor")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -1056,7 +1111,7 @@ master_stack_layout_current_monitor() {
 master_stack_layout() {
     local orientation="$1"  # vertical or horizontal
     local percentage="${2:-60}"  # master window percentage (default 60%)
-    local windows=($(get_visible_windows))
+    local windows=($(get_visible_windows_by_position))
     local count=${#windows[@]}
     
     if [[ $count -lt 2 ]]; then
@@ -1108,7 +1163,7 @@ center_master_layout_current_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor "$current_monitor")
+    done < <(get_visible_windows_on_monitor_by_position "$current_monitor")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -1146,7 +1201,7 @@ minimize_others() {
     
     local minimized_count=0
     local kept_count=0
-    local visible_windows=($(get_visible_windows))
+    local visible_windows=($(get_visible_windows_by_position))
     
     echo "Found ${#visible_windows[@]} visible windows to process"
     
@@ -1186,7 +1241,7 @@ minimize_others() {
             local windows_on_monitor=()
             while IFS= read -r line; do
                 [[ -n "$line" ]] && windows_on_monitor+=("$line")
-            done < <(get_visible_windows_on_monitor "$current_monitor")
+            done < <(get_visible_windows_on_monitor_by_position "$current_monitor")
             
             if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
                 if [[ -n "$monitor_layout" ]]; then
@@ -1231,7 +1286,7 @@ focus_window() {
         return 1
     fi
     
-    local windows=($(get_visible_windows))
+    local windows=($(get_visible_windows_by_position))
     local target_id=""
     
     case "$direction" in
@@ -1603,7 +1658,7 @@ cycle_window_positions() {
     local windows=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows+=("$line")
-    done < <(get_visible_windows)
+    done < <(get_visible_windows_by_position)
     
     local window_count=${#windows[@]}
     
@@ -1620,7 +1675,7 @@ cycle_window_positions() {
     
     for window_id in "${windows[@]}"; do
         local geom
-        geom=$(get_geometry "$window_id")
+        geom=$(get_window_geometry "$window_id")
         if [[ -n "$geom" ]]; then
             geometries+=("$geom")
             local title
@@ -1641,9 +1696,8 @@ cycle_window_positions() {
         local current_window="${windows[i]}"
         local target_geometry="${geometries[next_pos_index]}"
         
-        # Parse target geometry
-        eval "$target_geometry"
-        local target_x=$X target_y=$Y target_width=$WIDTH target_height=$HEIGHT
+        # Parse target geometry (comma-separated format)
+        IFS=',' read -r target_x target_y target_width target_height <<< "$target_geometry"
         
         # Move current window to target position
         apply_geometry "$current_window" "$target_x" "$target_y" "$target_width" "$target_height"
@@ -1662,7 +1716,7 @@ reverse_cycle_window_positions() {
     local windows=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows+=("$line")
-    done < <(get_visible_windows)
+    done < <(get_visible_windows_by_position)
     
     local window_count=${#windows[@]}
     
@@ -1679,7 +1733,7 @@ reverse_cycle_window_positions() {
     
     for window_id in "${windows[@]}"; do
         local geom
-        geom=$(get_geometry "$window_id")
+        geom=$(get_window_geometry "$window_id")
         if [[ -n "$geom" ]]; then
             geometries+=("$geom")
             local title
@@ -1700,9 +1754,8 @@ reverse_cycle_window_positions() {
         local current_window="${windows[i]}"
         local target_geometry="${geometries[prev_pos_index]}"
         
-        # Parse target geometry
-        eval "$target_geometry"
-        local target_x=$X target_y=$Y target_width=$WIDTH target_height=$HEIGHT
+        # Parse target geometry (comma-separated format)
+        IFS=',' read -r target_x target_y target_width target_height <<< "$target_geometry"
         
         # Move current window to target position
         apply_geometry "$current_window" "$target_x" "$target_y" "$target_width" "$target_height"
@@ -1898,7 +1951,7 @@ apply_meta_maximize() {
         local window_list=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
+        done < <(get_visible_windows_on_monitor_by_position "$monitor")
         visible_windows+=("${window_list[@]}")
     done
     
@@ -1939,7 +1992,7 @@ apply_meta_columns() {
         local window_list=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
+        done < <(get_visible_windows_on_monitor_by_position "$monitor")
         
         if [[ ${#window_list[@]} -eq 0 ]]; then
             continue
@@ -1978,7 +2031,7 @@ apply_meta_rows() {
         local window_list=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
+        done < <(get_visible_windows_on_monitor_by_position "$monitor")
         
         if [[ ${#window_list[@]} -eq 0 ]]; then
             continue
@@ -2017,7 +2070,7 @@ apply_meta_grid() {
         local window_list=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
+        done < <(get_visible_windows_on_monitor_by_position "$monitor")
         
         if [[ ${#window_list[@]} -eq 0 ]]; then
             continue
@@ -2066,7 +2119,7 @@ apply_meta_center_sidebar() {
         local window_list=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
+        done < <(get_visible_windows_on_monitor_by_position "$monitor")
         
         if [[ ${#window_list[@]} -eq 0 ]]; then
             continue
@@ -2190,7 +2243,7 @@ watch_daemon_internal() {
             local windows_on_monitor=()
             while IFS= read -r line; do
                 [[ -n "$line" ]] && windows_on_monitor+=("$line")
-            done < <(get_visible_windows_on_monitor "$monitor")
+            done < <(get_visible_windows_on_monitor_by_position "$monitor")
             
             if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
                 if [[ -n "$monitor_layout" ]]; then
