@@ -264,6 +264,21 @@ get_workspace_monitor_layout() {
     fi
 }
 
+clear_workspace_monitor_layout() {
+    local workspace="$1"
+    local monitor_name="$2"
+    
+    # Initialize workspace state file if it doesn't exist
+    [[ ! -f "$WORKSPACE_STATE_FILE" ]] && touch "$WORKSPACE_STATE_FILE"
+    
+    # Create a safe key for the monitor (replace special chars)
+    local safe_monitor=$(echo "$monitor_name" | tr ':.-' '___')
+    
+    # Remove any existing entry for this workspace+monitor
+    grep -v "^WORKSPACE_${workspace}_MONITOR_${safe_monitor}=" "$WORKSPACE_STATE_FILE" > "${WORKSPACE_STATE_FILE}.tmp" 2>/dev/null || touch "${WORKSPACE_STATE_FILE}.tmp"
+    mv "${WORKSPACE_STATE_FILE}.tmp" "$WORKSPACE_STATE_FILE"
+}
+
 # Function to pick a window with mouse
 pick_window() {
     echo "Click on a window to select it..." >&2
@@ -820,54 +835,71 @@ auto_layout_single_monitor() {
     esac
 }
 
+# Apply auto-layout and reset saved layout for a specific monitor
+auto_layout_and_reset_monitor() {
+    local monitor="$1"
+    
+    # Get windows on this monitor
+    local windows_on_monitor=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && windows_on_monitor+=("$line")
+    done < <(get_visible_windows_on_monitor "$monitor")
+    
+    if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
+        IFS=':' read -r monitor_name rest <<< "$monitor"
+        echo "No visible windows on monitor $monitor_name"
+        return 1
+    fi
+    
+    # Apply auto-layout
+    auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
+    
+    # Reset saved layout for this monitor
+    IFS=':' read -r monitor_name rest <<< "$monitor"
+    local current_workspace=$(get_current_workspace)
+    
+    echo "Resetting monitor $monitor_name to auto-layout behavior"
+    clear_workspace_monitor_layout "$current_workspace" "$monitor_name"
+    save_workspace_monitor_layout "$current_workspace" "$monitor_name" "auto"
+}
+
 # Auto-layout for current monitor only
 auto_layout_current_monitor() {
     get_screen_info
     local current_monitor=$(get_current_monitor)
-    
-    # Get windows on the current monitor only
-    local windows_on_monitor=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor "$current_monitor")
-    
-    if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
-        echo "No visible windows on current monitor"
-        return 1
-    fi
-    
-    auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
-    echo "Auto-layout applied to current monitor"
+    auto_layout_and_reset_monitor "$current_monitor"
 }
 
-# Auto-layout for all monitors
+# Auto-layout for all monitors - applies same logic as current monitor to each monitor
 auto_layout_all_monitors() {
-    echo "Detecting visible windows..."
+    echo "Applying auto-layout and reset to ALL monitors..."
     
     get_screen_info
     
     local total_windows=0
-    # Process each monitor independently
+    local processed_monitors=0
+    
+    # Apply the same auto+reset logic to each monitor
     for monitor in "${MONITORS[@]}"; do
-        # Get windows on this monitor
+        # Get windows on this monitor to check if we should process it
         local windows_on_monitor=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && windows_on_monitor+=("$line")
         done < <(get_visible_windows_on_monitor "$monitor")
         
-        # Apply auto-layout to this monitor if it has windows
-        if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
-            auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
+        # Apply auto-layout and reset to this monitor (same as single monitor command)
+        if auto_layout_and_reset_monitor "$monitor"; then
             total_windows=$((total_windows + ${#windows_on_monitor[@]}))
+            processed_monitors=$((processed_monitors + 1))
         fi
     done
     
     if [[ $total_windows -eq 0 ]]; then
-        echo "No visible windows found"
+        echo "No visible windows found on any monitor"
         return 1
     fi
     
-    echo "Auto-layout applied successfully to $total_windows window(s)"
+    echo "Auto-layout and reset applied successfully to $total_windows window(s) on $processed_monitors monitor(s)"
 }
 
 # Main auto-layout function - kept for backward compatibility but now wraps the new functions
@@ -1095,6 +1127,98 @@ center_master_layout_current_monitor() {
     local workspace=$(get_current_workspace)
     IFS=':' read -r monitor_name rest <<< "$current_monitor"
     save_workspace_monitor_layout "$workspace" "$monitor_name" "master center $percentage"
+}
+
+# Minimize all windows except the active one
+minimize_others() {
+    local active_id=$(xdotool getactivewindow 2>/dev/null)
+    
+    if [[ -z "$active_id" || "$active_id" == "0" ]]; then
+        echo "No active window found"
+        return 1
+    fi
+    
+    # Convert to decimal in case it's in hex format
+    active_id=$(printf "%d" "$active_id" 2>/dev/null || echo "$active_id")
+    
+    local active_title=$(xdotool getwindowname "$active_id" 2>/dev/null || echo "Window $active_id")
+    echo "Active window ID: $active_id ($active_title)"
+    
+    local minimized_count=0
+    local kept_count=0
+    local visible_windows=($(get_visible_windows))
+    
+    echo "Found ${#visible_windows[@]} visible windows to process"
+    
+    for window_id in "${visible_windows[@]}"; do
+        # Convert to decimal for comparison
+        local window_decimal=$(printf "%d" "$window_id" 2>/dev/null || echo "$window_id")
+        
+        if [[ "$window_decimal" != "$active_id" ]]; then
+            local title=$(xdotool getwindowname "$window_id" 2>/dev/null || echo "Window $window_id")
+            echo "Minimizing: $title (ID: $window_id)"
+            xdotool windowminimize "$window_id" 2>/dev/null
+            minimized_count=$((minimized_count + 1))
+            # Small delay between minimizations to allow X11 events to propagate
+            sleep 0.05
+        else
+            kept_count=$((kept_count + 1))
+            echo "Keeping: $active_title (ID: $window_id)"
+        fi
+    done
+    
+    # Automatically apply layout to remaining window if daemon is running
+    if [[ $minimized_count -gt 0 ]]; then
+        if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+            echo "Daemon detected - applying layout to remaining window(s)"
+            sleep 0.2  # Brief delay to ensure minimization is complete
+            
+            # Apply appropriate layout to the current monitor
+            get_screen_info
+            local current_monitor=$(get_current_monitor)
+            IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
+            
+            # Get current workspace and check for saved layout
+            local current_workspace=$(get_current_workspace)
+            local monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" 2>/dev/null)
+            
+            # Get windows on current monitor after minimization
+            local windows_on_monitor=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && windows_on_monitor+=("$line")
+            done < <(get_visible_windows_on_monitor "$current_monitor")
+            
+            if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
+                if [[ -n "$monitor_layout" ]]; then
+                    echo "Applying saved monitor layout: $monitor_layout"
+                    if [[ "$monitor_layout" == "auto" ]]; then
+                        auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
+                    elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
+                        local master_params="${BASH_REMATCH[1]}"
+                        read -r orientation percentage <<< "$master_params"
+                        
+                        # Reuse existing atomic functions
+                        if [[ "$orientation" == "center" ]]; then
+                            apply_meta_center_sidebar_single_monitor "$current_monitor" "${percentage:-50}" "${windows_on_monitor[@]}"
+                        elif [[ "$orientation" == "vertical" ]]; then
+                            apply_meta_main_sidebar_single_monitor "$current_monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
+                        else
+                            apply_meta_topbar_main_single_monitor "$current_monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
+                        fi
+                    fi
+                else
+                    echo "Applying auto-layout to current monitor"
+                    auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
+                fi
+            fi
+        fi
+    fi
+    
+    if [[ $kept_count -eq 0 ]]; then
+        echo "Warning: Active window was not found in visible windows list!"
+    fi
+    
+    echo "Minimized $minimized_count window(s), kept $kept_count active window"
 }
 
 # Focus navigation
@@ -2270,16 +2394,11 @@ case "${1:-}" in
     auto)
         # Auto-layout - apply to current monitor by default, all monitors with --all
         if [[ "${2:-}" == "--all" ]]; then
-            # Apply to all monitors
+            # Apply auto-layout and reset to all monitors
             auto_layout_all_monitors
-            save_workspace_meta_layout "$(get_current_workspace)" "auto --all"
         else
-            # Apply to current monitor only (default behavior)
+            # Apply auto-layout and reset to current monitor only
             auto_layout_current_monitor
-            # Save per-monitor layout
-            local current_monitor=$(get_current_monitor)
-            IFS=':' read -r monitor_name rest <<< "$current_monitor"
-            save_workspace_monitor_layout "$(get_current_workspace)" "$monitor_name" "auto"
         fi
         ;;
     resize)
@@ -2602,6 +2721,10 @@ case "${1:-}" in
                 ;;
         esac
         ;;
+    minimize-others)
+        # Minimize all windows except the active one
+        minimize_others
+        ;;
     swap)
         # Window swapping functionality
         case "${2:-}" in
@@ -2795,6 +2918,7 @@ Usage:
   place-window resize <direction> [pixels]  Simultaneous resize with adjacent windows
   place-window master <orientation>  Master-stack layouts
   place-window focus <direction>  Navigate between windows
+  place-window minimize-others    Minimize all windows except active
   place-window watch <command>    Watch mode for automatic tiling
   place-window workspace <command>  Workspace-specific layout profiles
   place-window swap <mode>        Window position swapping
@@ -2892,6 +3016,7 @@ Examples:
   place-window master center 60   # Center master (60%) with 20% each side - current monitor
   place-window resize expand-right 100  # Expand window right by 100px
   place-window focus right        # Focus window to the right
+  place-window minimize-others    # Minimize all except active window
   place-window auto-config 2 primary-secondary  # 70/30 split for 2 windows
   place-window config gap 15      # Set 15px gaps around windows
   place-window config decoration-detect  # Auto-detect window decoration size
