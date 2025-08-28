@@ -86,8 +86,8 @@ MIN_WIDTH=${MIN_WIDTH:-400}
 MIN_HEIGHT=${MIN_HEIGHT:-300}
 
 # Window decoration dimensions - configurable via settings
-DECORATION_HEIGHT=${DECORATION_HEIGHT:-24}
-DECORATION_WIDTH=${DECORATION_WIDTH:-0}
+DECORATION_HEIGHT=${DECORATION_HEIGHT:-30}
+DECORATION_WIDTH=${DECORATION_WIDTH:-2}
 
 # Auto-detect decoration dimensions from a sample window
 auto_detect_decorations() {
@@ -141,8 +141,8 @@ auto_detect_decorations() {
     # Offer to save the detected values
     read -p "Update configuration with detected values? [y/N]: " confirm
     if [[ "$confirm" == [yY] ]]; then
-        sed -i "s/^DECORATION_WIDTH=.*/DECORATION_WIDTH=$detected_width/" "$SETTINGS_FILE"
-        sed -i "s/^DECORATION_HEIGHT=.*/DECORATION_HEIGHT=$detected_height/" "$SETTINGS_FILE"
+        update_setting "DECORATION_WIDTH" "$detected_width"
+        update_setting "DECORATION_HEIGHT" "$detected_height"
         echo "✓ Configuration updated"
         echo "  Decoration width: ${detected_width}px"
         echo "  Decoration height: ${detected_height}px"
@@ -150,6 +150,42 @@ auto_detect_decorations() {
     else
         echo "Configuration not changed"
     fi
+}
+
+# Common helper functions to avoid code duplication (DRY principle)
+
+# Initialize common layout variables in current scope (used in 17+ functions)
+# Usage: init_layout_vars "$monitor"
+init_layout_vars() {
+    local monitor="$1"
+    layout_area=$(get_monitor_layout_area "$monitor")
+    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
+    
+    gap=$GAP
+    decoration_h=$DECORATION_HEIGHT
+    decoration_w=$DECORATION_WIDTH
+    final_x=$((usable_x + gap))
+    final_y=$((usable_y + gap))
+    final_w=$((usable_w - gap * 2 - decoration_w))
+    final_h=$((usable_h - gap * 2 - decoration_h))
+}
+
+# Gather windows for a specific monitor (used in 6+ functions)
+gather_monitor_windows() {
+    local monitor="$1"
+    local window_list=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && window_list+=("$line")
+    done < <(get_visible_windows_on_monitor "$monitor")
+    
+    printf '%s\n' "${window_list[@]}"
+}
+
+# Update a setting in settings file (used multiple times)
+update_setting() {
+    local setting_name="$1"
+    local new_value="$2"
+    sed -i "s/^${setting_name}=.*/${setting_name}=${new_value}/" "$SETTINGS_FILE"
 }
 
 # Workspace state tracking functions
@@ -479,18 +515,18 @@ apply_meta_main_sidebar_single_monitor() {
     shift 2
     local window_list=("$@")
     
-    local layout_area=$(get_monitor_layout_area "$monitor")
-    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-    
-    local gap=$GAP
-    local decoration_h=$DECORATION_HEIGHT
-    local decoration_w=$DECORATION_WIDTH
-    local final_x=$((usable_x + gap))
-    local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2 - decoration_w))
-    local final_h=$((usable_h - gap * 2 - decoration_h))  # Account for window decorations in height only
+    # Use helper function to avoid duplicate variable initialization (DRY principle)
+    init_layout_vars "$monitor"
     
     local num_windows=${#window_list[@]}
+    
+    # If only 1 window, use maximize atomic function
+    if [[ $num_windows -eq 1 ]]; then
+        apply_meta_maximize_single_monitor "$monitor" "${window_list[@]}"
+        return
+    fi
+    
+    # For 2+ windows, do main-sidebar layout
     local gap_between=$((gap + decoration_w))  # Gap + decoration between main and sidebar
     local available_w=$((final_w - gap_between))  # Total width minus gap between windows
     local main_w=$((available_w * main_width_percent / 100))
@@ -562,6 +598,12 @@ apply_meta_topbar_main_single_monitor() {
     local final_h=$((usable_h - gap * 2 - decoration_h))  # Account for decorations in height only
     
     local num_windows=${#window_list[@]}
+    
+    # If only 1 window, use maximize atomic function
+    if [[ $num_windows -eq 1 ]]; then
+        apply_meta_maximize_single_monitor "$monitor" "${window_list[@]}"
+        return
+    fi
     
     # Calculate topbar and main heights with gap and decoration between them
     local gap_vertical=$((gap + decoration_h))  # Gap + decoration between topbar and main
@@ -923,6 +965,7 @@ simultaneous_resize() {
 # Master-stack layouts (xpytile-inspired)
 master_stack_layout() {
     local orientation="$1"  # vertical or horizontal
+    local percentage="${2:-60}"  # master window percentage (default 60%)
     local windows=($(get_visible_windows))
     local count=${#windows[@]}
     
@@ -950,14 +993,14 @@ master_stack_layout() {
             local num_windows=${#windows_on_monitor[@]}
             
             IFS=':' read -r name mx my mw mh <<< "$monitor"
-            echo "Monitor $name: Applying master-stack ($orientation) to $num_windows window(s)"
+            echo "Monitor $name: Applying master-stack ($orientation, ${percentage}%) to $num_windows window(s)"
             
             if [[ "$orientation" == "vertical" ]]; then
                 # Master on left, stack on right - use main-sidebar atomic function
-                apply_meta_main_sidebar_single_monitor "$monitor" 60 "${windows_on_monitor[@]}"
+                apply_meta_main_sidebar_single_monitor "$monitor" "$percentage" "${windows_on_monitor[@]}"
             else
                 # Master on top, stack on bottom - use topbar-main atomic function  
-                apply_meta_topbar_main_single_monitor "$monitor" 60 "${windows_on_monitor[@]}"
+                apply_meta_topbar_main_single_monitor "$monitor" "$percentage" "${windows_on_monitor[@]}"
             fi
         fi
     done
@@ -1801,68 +1844,6 @@ apply_meta_grid() {
     echo "Grid meta-layout applied successfully"
 }
 
-apply_meta_main_sidebar() {
-    local main_width_percent="$1"
-    get_screen_info
-    
-    # Apply main-sidebar layout to each monitor independently
-    for monitor in "${MONITORS[@]}"; do
-        local window_list=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
-        
-        if [[ ${#window_list[@]} -eq 0 ]]; then
-            continue
-        fi
-        
-        IFS=':' read -r name mx my mw mh <<< "$monitor"
-        local num_windows=${#window_list[@]}
-        echo "Monitor $name: Main-sidebar-$main_width_percent with $num_windows window(s)"
-        
-        if [[ $num_windows -eq 1 ]]; then
-            # Only one window - maximize it
-            local layout_area=$(get_monitor_layout_area "$monitor")
-            IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-            local gap=$GAP
-            local decoration_h=$DECORATION_HEIGHT
-    local decoration_w=$DECORATION_WIDTH
-            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2 - decoration_h))
-            continue
-        fi
-        
-        local layout_area=$(get_monitor_layout_area "$monitor")
-        IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-        
-        local gap=$GAP
-        local final_x=$((usable_x + gap))
-        local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2 - decoration_w))
-        local final_h=$((usable_h - gap * 2))
-        
-        # Calculate main and sidebar widths with reasonable horizontal gap
-        local available_w=$((final_w - gap * 2))  # Use 2x gap between main and sidebar (reasonable)
-        local main_w=$((available_w * main_width_percent / 100))
-        local sidebar_w=$((available_w - main_w))
-        local sidebar_x=$((final_x + main_w + gap * 2))
-        
-        # Position main window (first window)
-        apply_geometry "${window_list[0]}" $final_x $final_y $main_w $final_h
-        
-        # Position sidebar windows (remaining windows stacked)
-        local sidebar_windows=$((num_windows - 1))
-        local available_sidebar_h=$((final_h - gap * 4 * (sidebar_windows - 1)))  # Use 4x gap for safety
-        local sidebar_h=$((available_sidebar_h / sidebar_windows))
-        
-        for ((i=1; i<num_windows; i++)); do
-            local sidebar_y=$((final_y + (i - 1) * (sidebar_h + gap * 4)))  # Use 4x gap between sidebar windows
-            apply_geometry "${window_list[i]}" $sidebar_x $sidebar_y $sidebar_w $sidebar_h
-        done
-    done
-    
-    echo "Main-sidebar-$main_width_percent meta-layout applied successfully"
-}
-
 apply_meta_center_sidebar() {
     local center_width_percent="$1"
     get_screen_info
@@ -1883,56 +1864,41 @@ apply_meta_center_sidebar() {
         echo "Monitor $name: Center-sidebar-$center_width_percent with $num_windows window(s)"
         
         if [[ $num_windows -eq 1 ]]; then
-            # Only one window - maximize it (like main-sidebar does)
-            local layout_area=$(get_monitor_layout_area "$monitor")
-            IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-            local gap=$GAP
-            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2))
+            # Only one window - use maximize atomic function
+            apply_meta_maximize_single_monitor "$monitor" "${window_list[@]}"
             continue
         fi
         
         if [[ $num_windows -eq 2 ]]; then
-            # Two windows - behave exactly like main-sidebar (main left, sidebar right)
-            local layout_area=$(get_monitor_layout_area "$monitor")
-            IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-            
-            local gap=$GAP
-            local final_x=$((usable_x + gap))
-            local final_y=$((usable_y + gap))
-            local final_w=$((usable_w - gap * 2 - decoration_w))
-            local final_h=$((usable_h - gap * 2))
-            
-            # Use same logic as main-sidebar: main window at 75% width, sidebar takes rest
-            local available_w=$((final_w - gap * 2))  # Use 2x gap between main and sidebar (reasonable)
-            local main_w=$((available_w * 75 / 100))
-            local sidebar_w=$((available_w - main_w))
-            local sidebar_x=$((final_x + main_w + gap * 2))
-            
-            # Position main window (first window)
-            apply_geometry "${window_list[0]}" $final_x $final_y $main_w $final_h
-            
-            # Position sidebar window (second window) - full height on right
-            apply_geometry "${window_list[1]}" $sidebar_x $final_y $sidebar_w $final_h
+            # Two windows - use main-sidebar atomic function with specified percentage
+            apply_meta_main_sidebar_single_monitor "$monitor" "$center_width_percent" "${window_list[@]}"
             continue
         fi
         
+        # For 3+ windows, create the proper center-sidebar layout:
+        # Left sidebar: (100-X)/2 width | Center: X% width | Right sidebar: (100-X)/2 width
         local layout_area=$(get_monitor_layout_area "$monitor")
         IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
         
         local gap=$GAP
+        local decoration_h=$DECORATION_HEIGHT
+        local decoration_w=$DECORATION_WIDTH
         local final_x=$((usable_x + gap))
         local final_y=$((usable_y + gap))
         local final_w=$((usable_w - gap * 2 - decoration_w))
-        local final_h=$((usable_h - gap * 2))
+        local final_h=$((usable_h - gap * 2 - decoration_h))
         
-        # Calculate center and sidebar widths with reasonable horizontal gaps
-        local available_w=$((final_w - gap * 4))  # Remove gaps between sections (2 gaps * 2x reasonable)
+        # Calculate three-column widths with gaps between them
+        local gap_between=$((gap + decoration_w))  # Gap + decoration between columns
+        local available_w=$((final_w - gap_between * 2))  # Total width minus 2 gaps between columns
         local center_w=$((available_w * center_width_percent / 100))
-        local sidebar_w=$((available_w - center_w))
-        local half_sidebar_w=$((sidebar_w / 2))
+        local sidebar_total_w=$((available_w - center_w))
+        local sidebar_w=$((sidebar_total_w / 2))
         
-        local center_x=$((final_x + half_sidebar_w + gap * 2))
-        local right_sidebar_x=$((center_x + center_w + gap * 2))
+        # Calculate column positions
+        local left_sidebar_x=$final_x
+        local center_x=$((final_x + sidebar_w + gap_between))
+        local right_sidebar_x=$((center_x + center_w + gap_between))
         
         # Position center window (first window)
         apply_geometry "${window_list[0]}" $center_x $final_y $center_w $final_h
@@ -1942,92 +1908,31 @@ apply_meta_center_sidebar() {
         local left_sidebar_count=$((sidebar_windows / 2))
         local right_sidebar_count=$((sidebar_windows - left_sidebar_count))
         
-        # Position left sidebar windows
+        # Position left sidebar windows (stacked vertically)
         if [[ $left_sidebar_count -gt 0 ]]; then
-            local left_sidebar_h=$(((final_h - gap * 4 * (left_sidebar_count - 1)) / left_sidebar_count))  # Use 4x gap
+            local gap_vertical=$((gap + decoration_h))  # Gap + decoration between stacked windows
+            local available_sidebar_h=$((final_h - gap_vertical * (left_sidebar_count - 1)))
+            local left_sidebar_h=$((available_sidebar_h / left_sidebar_count))
             for ((i=1; i<=left_sidebar_count; i++)); do
-                local y=$((final_y + (i - 1) * (left_sidebar_h + gap * 4)))  # Use 4x gap between windows
-                apply_geometry "${window_list[i]}" $final_x $y $half_sidebar_w $left_sidebar_h
+                local y=$((final_y + (i - 1) * (left_sidebar_h + gap_vertical)))
+                apply_geometry "${window_list[i]}" $left_sidebar_x $y $sidebar_w $left_sidebar_h
             done
         fi
         
-        # Position right sidebar windows
+        # Position right sidebar windows (stacked vertically)  
         if [[ $right_sidebar_count -gt 0 ]]; then
-            local right_sidebar_h=$(((final_h - gap * 4 * (right_sidebar_count - 1)) / right_sidebar_count))  # Use 4x gap
+            local gap_vertical=$((gap + decoration_h))  # Gap + decoration between stacked windows
+            local available_sidebar_h=$((final_h - gap_vertical * (right_sidebar_count - 1)))
+            local right_sidebar_h=$((available_sidebar_h / right_sidebar_count))
             for ((i=0; i<right_sidebar_count; i++)); do
                 local window_idx=$((left_sidebar_count + 1 + i))
-                local y=$((final_y + i * (right_sidebar_h + gap * 4)))  # Use 4x gap between windows
-                apply_geometry "${window_list[window_idx]}" $right_sidebar_x $y $half_sidebar_w $right_sidebar_h
+                local y=$((final_y + i * (right_sidebar_h + gap_vertical)))
+                apply_geometry "${window_list[window_idx]}" $right_sidebar_x $y $sidebar_w $right_sidebar_h
             done
         fi
     done
     
     echo "Center-sidebar-$center_width_percent meta-layout applied successfully"
-}
-
-apply_meta_topbar_main() {
-    local topbar_height_percent="$1"
-    get_screen_info
-    
-    # Apply topbar-main layout to each monitor independently
-    for monitor in "${MONITORS[@]}"; do
-        local window_list=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && window_list+=("$line")
-        done < <(get_visible_windows_on_monitor "$monitor")
-        
-        if [[ ${#window_list[@]} -eq 0 ]]; then
-            continue
-        fi
-        
-        IFS=':' read -r name mx my mw mh <<< "$monitor"
-        local num_windows=${#window_list[@]}
-        echo "Monitor $name: Topbar-main-$topbar_height_percent with $num_windows window(s)"
-        
-        if [[ $num_windows -eq 1 ]]; then
-            # Only one window - maximize it
-            local layout_area=$(get_monitor_layout_area "$monitor")
-            IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-            local gap=$GAP
-            local decoration_h=$DECORATION_HEIGHT
-    local decoration_w=$DECORATION_WIDTH
-            apply_geometry "${window_list[0]}" $((usable_x + gap)) $((usable_y + gap)) $((usable_w - gap * 2)) $((usable_h - gap * 2 - decoration_h))
-            continue
-        fi
-        
-        local layout_area=$(get_monitor_layout_area "$monitor")
-        IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-        
-        local gap=$GAP
-        local final_x=$((usable_x + gap))
-        local final_y=$((usable_y + gap))
-        local final_w=$((usable_w - gap * 2 - decoration_w))
-        local final_h=$((usable_h - gap * 2))
-        
-        # Calculate topbar and main heights with 4x gap safety margin between them
-        local available_h=$((final_h - gap * 4))  # Use 4x gap for safety between topbar and main
-        local topbar_h=$((available_h * topbar_height_percent / 100))
-        local main_h=$((available_h - topbar_h))
-        local main_y=$((final_y + topbar_h + gap * 4))
-        
-        # Position main window (last window) - takes full width at bottom
-        local main_window_index=$((num_windows - 1))
-        apply_geometry "${window_list[main_window_index]}" $final_x $main_y $final_w $main_h
-        
-        # Position topbar windows (all except last) in columns
-        local topbar_windows=$((num_windows - 1))
-        if [[ $topbar_windows -gt 0 ]]; then
-            local available_topbar_w=$((final_w - gap * (topbar_windows - 1)))
-            local topbar_column_w=$((available_topbar_w / topbar_windows))
-            
-            for ((i=0; i<topbar_windows; i++)); do
-                local topbar_x=$((final_x + i * (topbar_column_w + gap)))
-                apply_geometry "${window_list[i]}" $topbar_x $final_y $topbar_column_w $topbar_h
-            done
-        fi
-    done
-    
-    echo "Topbar-main-$topbar_height_percent meta-layout applied successfully"
 }
 
 # Watch daemon functions
@@ -2226,14 +2131,47 @@ case "${1:-}" in
         # Master-stack layouts
         case "${2:-}" in
             vertical|horizontal)
-                master_stack_layout "$2"
+                # Check if third parameter is a percentage
+                percentage="${3:-60}"
+                if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                    master_stack_layout "$2" "$percentage"
+                else
+                    if [[ -n "$3" ]]; then
+                        echo "Error: Percentage must be 10-90"
+                        echo "Usage: place-window master vertical [10-90]"
+                        exit 1
+                    fi
+                    master_stack_layout "$2" 60  # Default 60%
+                fi
+                ;;
+            center)
+                # Check if third parameter is a percentage
+                percentage="${3:-50}"
+                if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                    apply_meta_center_sidebar "$percentage"
+                    save_workspace_meta_layout "$(get_current_workspace)" "master center-${percentage}"
+                else
+                    if [[ -n "$3" ]]; then
+                        echo "Error: Percentage must be 10-90"
+                        echo "Usage: place-window master center [10-90]"
+                        exit 1
+                    fi
+                    apply_meta_center_sidebar 50  # Default 50%
+                    save_workspace_meta_layout "$(get_current_workspace)" "master center-50"
+                fi
                 ;;
             *)
-                echo "Master-stack layouts:"
-                echo "  place-window master vertical     Master left, stack right"
-                echo "  place-window master horizontal   Master top, stack bottom"
+                echo "Master layouts:"
+                echo "  place-window master vertical [percentage]    Master left, stack right"
+                echo "  place-window master horizontal [percentage]  Master top, stack bottom"
+                echo "  place-window master center [percentage]      Center master, side stacks"
                 echo ""
-                echo "Master window gets 60% of space, others stack in remaining 40%"
+                echo "Examples:"
+                echo "  place-window master vertical      # 60% master (default)"
+                echo "  place-window master vertical 70   # 70% master, 30% stack"
+                echo "  place-window master horizontal 50 # 50% master, 50% stack"
+                echo "  place-window master center        # 50% center (default)"
+                echo "  place-window master center 60     # 60% center, 20% each side"
                 ;;
         esac
         ;;
@@ -2421,58 +2359,16 @@ case "${1:-}" in
                 apply_meta_grid
                 save_workspace_meta_layout "$(get_current_workspace)" "meta grid"
                 ;;
-            main-sidebar-*)
-                width_param="${2#main-sidebar-}"
-                if [[ "$width_param" =~ ^[0-9]+$ && $width_param -ge 10 && $width_param -le 90 ]]; then
-                    echo "Applying main-sidebar-${width_param} meta-layout"
-                    apply_meta_main_sidebar "$width_param"
-                    save_workspace_meta_layout "$(get_current_workspace)" "meta main-sidebar-${width_param}"
-                else
-                    echo "Error: Width parameter must be 10-90 (percentage)"
-                    echo "Usage: place-window meta main-sidebar-70"
-                    exit 1
-                fi
-                ;;
-            center-sidebar-*)
-                width_param="${2#center-sidebar-}"
-                if [[ "$width_param" =~ ^[0-9]+$ && $width_param -ge 10 && $width_param -le 90 ]]; then
-                    echo "Applying center-sidebar-${width_param} meta-layout"
-                    apply_meta_center_sidebar "$width_param"
-                    save_workspace_meta_layout "$(get_current_workspace)" "meta center-sidebar-${width_param}"
-                else
-                    echo "Error: Width parameter must be 10-90 (percentage)"
-                    echo "Usage: place-window meta center-sidebar-60"
-                    exit 1
-                fi
-                ;;
-            topbar-main-*)
-                height_param="${2#topbar-main-}"
-                if [[ "$height_param" =~ ^[0-9]+$ && $height_param -ge 10 && $height_param -le 90 ]]; then
-                    echo "Applying topbar-main-${height_param} meta-layout"
-                    apply_meta_topbar_main "$height_param"
-                    save_workspace_meta_layout "$(get_current_workspace)" "meta topbar-main-${height_param}"
-                else
-                    echo "Error: Height parameter must be 10-90 (percentage)"
-                    echo "Usage: place-window meta topbar-main-70"
-                    exit 1
-                fi
-                ;;
             *)
                 echo "Meta-layout commands (work with any number of windows):"
                 echo "  place-window meta maximize          Maximize top window, minimize others"
                 echo "  place-window meta columns           Distribute all windows in columns"
                 echo "  place-window meta rows              Distribute all windows in rows"
                 echo "  place-window meta grid              Dynamic grid layout"
-                echo "  place-window meta main-sidebar-X    Main window (X%) + sidebar stack"
-                echo "  place-window meta center-sidebar-X  Center window (X%) + side stacks"
-                echo "  place-window meta topbar-main-X     Topbar columns (X%) + main bottom"
                 echo ""
                 echo "Examples:"
                 echo "  place-window meta columns           # 5 windows = 5 columns"
                 echo "  place-window meta grid              # 5 windows = 3×2 grid"
-                echo "  place-window meta main-sidebar-70   # 70% main + 30% sidebar stack"
-                echo "  place-window meta center-sidebar-50 # 50% center + 25% each side"
-                echo "  place-window meta topbar-main-70    # 70% topbar columns + 30% main"
                 ;;
         esac
         ;;
@@ -2715,9 +2611,10 @@ Auto-layout:
     4 windows: grid, main-three-side, three-top-bottom
     5 windows: center-corners, two-three-columns, grid-wide-bottom
 
-Master-stack layouts (xpytile-inspired):
-  place-window master vertical     Master left (60%), stack right (40%)
-  place-window master horizontal   Master top (60%), stack bottom (40%)
+Master layouts (xpytile-inspired):
+  place-window master vertical [%]   Master left, stack right (default 60%)  
+  place-window master horizontal [%] Master top, stack bottom (default 60%)
+  place-window master center [%]     Center master, side stacks (default 50%)
 
 Simultaneous resize (affects adjacent windows):
   place-window resize expand-right [pixels]   Expand right, shrink adjacent
@@ -2772,7 +2669,9 @@ Examples:
   place-window watch start        # Start automatic tiling daemon
   place-window workspace save work # Save current workspace layout
   place-window swap interactive    # Swap positions of two windows
-  place-window master vertical    # Master-stack with master on left
+  place-window master vertical    # Master-stack with master on left (60%)
+  place-window master vertical 70 # Master-stack with 70% master, 30% stack
+  place-window master center 60   # Center master (60%) with 20% each side
   place-window resize expand-right 100  # Expand window right by 100px
   place-window focus right        # Focus window to the right
   place-window auto-config 2 primary-secondary  # 70/30 split for 2 windows
