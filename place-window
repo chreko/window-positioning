@@ -230,6 +230,40 @@ get_workspace_meta_layout() {
     fi
 }
 
+# Per-monitor layout saving functions
+save_workspace_monitor_layout() {
+    local workspace="$1"
+    local monitor_name="$2"
+    local layout="$3"
+    
+    # Initialize workspace state file if it doesn't exist
+    [[ ! -f "$WORKSPACE_STATE_FILE" ]] && touch "$WORKSPACE_STATE_FILE"
+    
+    # Create a safe key for the monitor (replace special chars)
+    local safe_monitor=$(echo "$monitor_name" | tr ':.-' '___')
+    
+    # Remove any existing entry for this workspace+monitor and add new one
+    grep -v "^WORKSPACE_${workspace}_MONITOR_${safe_monitor}=" "$WORKSPACE_STATE_FILE" > "${WORKSPACE_STATE_FILE}.tmp" 2>/dev/null || touch "${WORKSPACE_STATE_FILE}.tmp"
+    echo "WORKSPACE_${workspace}_MONITOR_${safe_monitor}=${layout}" >> "${WORKSPACE_STATE_FILE}.tmp"
+    mv "${WORKSPACE_STATE_FILE}.tmp" "$WORKSPACE_STATE_FILE"
+}
+
+get_workspace_monitor_layout() {
+    local workspace="$1"
+    local monitor_name="$2"
+    
+    # Create a safe key for the monitor (replace special chars)
+    local safe_monitor=$(echo "$monitor_name" | tr ':.-' '___')
+    
+    # Return the last layout used on this workspace+monitor
+    if [[ -f "$WORKSPACE_STATE_FILE" ]]; then
+        local layout=$(grep "^WORKSPACE_${workspace}_MONITOR_${safe_monitor}=" "$WORKSPACE_STATE_FILE" | cut -d'=' -f2-)
+        [[ -n "$layout" ]] && echo "$layout" || echo ""
+    else
+        echo ""
+    fi
+}
+
 # Function to pick a window with mouse
 pick_window() {
     echo "Click on a window to select it..." >&2
@@ -749,192 +783,97 @@ apply_meta_center_sidebar_single_monitor() {
     fi
 }
 
-# Main auto-layout function (monitor-aware)
-auto_layout() {
-    echo "Detecting visible windows..."
-    local windows=($(get_visible_windows))
-    local count=${#windows[@]}
+# Apply auto-layout to a single monitor based on window count
+auto_layout_single_monitor() {
+    local monitor="$1"
+    shift
+    local windows_on_monitor=("$@")
     
-    if [[ $count -eq 0 ]]; then
+    local window_count=${#windows_on_monitor[@]}
+    if [[ $window_count -eq 0 ]]; then
+        return
+    fi
+    
+    IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
+    echo "Monitor $monitor_name: Applying auto-layout to $window_count window(s)"
+    
+    # Apply layout based on window count
+    case $window_count in
+        1)
+            apply_meta_maximize_single_monitor "$monitor" "${windows_on_monitor[@]}"
+            ;;
+        2)
+            apply_meta_columns_single_monitor "$monitor" "${windows_on_monitor[@]}"
+            ;;
+        3)
+            apply_meta_main_sidebar_single_monitor "$monitor" 50 "${windows_on_monitor[@]}"
+            ;;
+        4)
+            apply_meta_grid_single_monitor "$monitor" "${windows_on_monitor[@]}"
+            ;;
+        5)
+            apply_meta_topbar_main_single_monitor "$monitor" 70 "${windows_on_monitor[@]}"
+            ;;
+        *)
+            apply_meta_grid_single_monitor "$monitor" "${windows_on_monitor[@]}"
+            ;;
+    esac
+}
+
+# Auto-layout for current monitor only
+auto_layout_current_monitor() {
+    get_screen_info
+    local current_monitor=$(get_current_monitor)
+    
+    # Get windows on the current monitor only
+    local windows_on_monitor=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && windows_on_monitor+=("$line")
+    done < <(get_visible_windows_on_monitor "$current_monitor")
+    
+    if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
+        echo "No visible windows on current monitor"
+        return 1
+    fi
+    
+    auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
+    echo "Auto-layout applied to current monitor"
+}
+
+# Auto-layout for all monitors
+auto_layout_all_monitors() {
+    echo "Detecting visible windows..."
+    
+    get_screen_info
+    
+    local total_windows=0
+    # Process each monitor independently
+    for monitor in "${MONITORS[@]}"; do
+        # Get windows on this monitor
+        local windows_on_monitor=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && windows_on_monitor+=("$line")
+        done < <(get_visible_windows_on_monitor "$monitor")
+        
+        # Apply auto-layout to this monitor if it has windows
+        if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
+            auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
+            total_windows=$((total_windows + ${#windows_on_monitor[@]}))
+        fi
+    done
+    
+    if [[ $total_windows -eq 0 ]]; then
         echo "No visible windows found"
         return 1
     fi
     
-    get_screen_info
-    
-    # Group windows by monitor
-    declare -A monitor_windows
-    for window_id in "${windows[@]}"; do
-        local monitor=$(get_window_monitor "$window_id")
-        IFS=':' read -r name mx my mw mh <<< "$monitor"
-        local key="${mx},${my}"  # Use coordinates as unique key
-        if [[ "${monitor_windows[$key]:-}" ]]; then
-            monitor_windows[$key]="${monitor_windows[$key]} $window_id"
-        else
-            monitor_windows[$key]="$window_id"
-        fi
-    done
-    
-    echo "Found $count visible window(s) across ${#monitor_windows[@]} monitor(s)"
-    
-    # Apply layout to each monitor's windows
-    for key in "${!monitor_windows[@]}"; do
-        local window_list=(${monitor_windows[$key]})
-        local window_count=${#window_list[@]}
-        
-        # Find the monitor info for this group
-        local target_monitor=""
-        for monitor in "${MONITORS[@]}"; do
-            IFS=':' read -r name mx my mw mh <<< "$monitor"
-            if [[ "$key" == "${mx},${my}" ]]; then
-                target_monitor="$monitor"
-                break
-            fi
-        done
-        
-        if [[ -n "$target_monitor" ]]; then
-            IFS=':' read -r name mx my mw mh <<< "$target_monitor"
-            echo "Monitor $name: Arranging $window_count window(s)"
-            
-            # Apply consistent meta-layout based on window count on this monitor
-            case $window_count in
-                1)
-                    echo "  Applying 1-window layout: meta maximize"
-                    # Temporarily set windows for this monitor only for meta-layout
-                    apply_meta_maximize_single_monitor "$target_monitor" "${window_list[@]}"
-                    ;;
-                2)
-                    echo "  Applying 2-window layout: meta columns"
-                    apply_meta_columns_single_monitor "$target_monitor" "${window_list[@]}"
-                    ;;
-                3)
-                    echo "  Applying 3-window layout: meta main-sidebar-50"
-                    apply_meta_main_sidebar_single_monitor "$target_monitor" 50 "${window_list[@]}"
-                    ;;
-                4)
-                    echo "  Applying 4-window layout: meta grid"
-                    apply_meta_grid_single_monitor "$target_monitor" "${window_list[@]}"
-                    ;;
-                5)
-                    echo "  Applying 5-window layout: meta topbar-main-70"
-                    apply_meta_topbar_main_single_monitor "$target_monitor" 70 "${window_list[@]}"
-                    ;;
-                *)
-                    echo "  Applying ${window_count}-window layout: meta grid"
-                    apply_meta_grid_single_monitor "$target_monitor" "${window_list[@]}"
-                    ;;
-            esac
-        fi
-    done
-    
-    echo "Multi-monitor auto-layout applied successfully"
+    echo "Auto-layout applied successfully to $total_windows window(s)"
 }
 
-# Monitor-specific auto-layout functions
-auto_layout_monitor_1_window() {
-    local monitor="$1" id="$2"
-    local layout_area=$(get_monitor_layout_area "$monitor")
-    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-    
-    # Maximize with gaps
-    local gap=$GAP
-    local final_x=$((usable_x + gap))
-    local final_y=$((usable_y + gap))
-    local final_w=$((usable_w - gap * 2 - decoration_w))
-    local final_h=$((usable_h - gap * 2))
-    apply_geometry "$id" $final_x $final_y $final_w $final_h
-}
-
-auto_layout_monitor_2_windows() {
-    local monitor="$1" layout="$2"
-    shift 2
-    local ids=("$@")
-    local layout_area=$(get_monitor_layout_area "$monitor")
-    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-    
-    case "$layout" in
-        equal)
-            # 50/50 split - use columns atomic function
-            apply_meta_columns_single_monitor "$monitor" "${ids[@]}"
-            ;;
-        primary-secondary)
-            # 70/30 split - use main-sidebar atomic function
-            apply_meta_main_sidebar_single_monitor "$monitor" 70 "${ids[@]}"
-            ;;
-        secondary-primary)
-            # 30/70 split - use main-sidebar atomic function  
-            apply_meta_main_sidebar_single_monitor "$monitor" 30 "${ids[@]}"
-            ;;
-    esac
-}
-
-auto_layout_monitor_3_windows() {
-    local monitor="$1" layout="$2"
-    shift 2
-    local ids=("$@")
-    local layout_area=$(get_monitor_layout_area "$monitor")
-    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-    
-    case "$layout" in
-        main-two-side)
-            # One left half, two stacked on right - use main-sidebar atomic function
-            apply_meta_main_sidebar_single_monitor "$monitor" 50 "${ids[@]}"
-            ;;
-        three-columns)
-            # Three equal columns - use columns atomic function
-            apply_meta_columns_single_monitor "$monitor" "${ids[@]}"
-            ;;
-        center-sidebars)
-            # 20/60/20 split - use columns atomic function (it handles any number equally)
-            apply_meta_columns_single_monitor "$monitor" "${ids[@]}"
-            ;;
-    esac
-}
-
-auto_layout_monitor_4_windows() {
-    local monitor="$1" layout="$2"
-    shift 2
-    local ids=("$@")
-    local layout_area=$(get_monitor_layout_area "$monitor")
-    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-    
-    case "$layout" in
-        grid)
-            # 2x2 grid - use grid atomic function
-            apply_meta_grid_single_monitor "$monitor" "${ids[@]}"
-            ;;
-        main-three-side)
-            # One left half, three stacked on right - use main-sidebar atomic function
-            apply_meta_main_sidebar_single_monitor "$monitor" 50 "${ids[@]}"
-            ;;
-        three-top-bottom)
-            # Three columns on top, one wide bottom - use topbar-main atomic function
-            apply_meta_topbar_main_single_monitor "$monitor" 60 "${ids[@]}"
-            ;;
-    esac
-}
-
-auto_layout_monitor_5_windows() {
-    local monitor="$1" layout="$2"
-    shift 2
-    local ids=("$@")
-    local layout_area=$(get_monitor_layout_area "$monitor")
-    IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
-    
-    case "$layout" in
-        center-corners)
-            # One center, four corners - use center-corners atomic function
-            apply_meta_center_corners_single_monitor "$monitor" "${ids[@]}"
-            ;;
-        two-three-columns)
-            # 2 windows on left, 3 on right - use main-sidebar with 40% main area
-            apply_meta_main_sidebar_single_monitor "$monitor" 40 "${ids[@]}"
-            ;;
-        grid-wide-bottom)
-            # 2x2 grid on top, one wide on bottom - use topbar-main with 60% topbar
-            apply_meta_topbar_main_single_monitor "$monitor" 60 "${ids[@]}"
-            ;;
-    esac
+# Main auto-layout function - kept for backward compatibility but now wraps the new functions
+auto_layout() {
+    # For backward compatibility, auto_layout without args applies to all monitors
+    auto_layout_all_monitors
 }
 
 # Function to find adjacent windows (side-by-side or stacked)
@@ -1074,6 +1013,11 @@ master_stack_layout_current_monitor() {
     fi
     
     echo "Master-stack layout ($orientation) applied to current monitor"
+    
+    # Save per-monitor layout
+    local workspace=$(get_current_workspace)
+    IFS=':' read -r monitor_name rest <<< "$current_monitor"
+    save_workspace_monitor_layout "$workspace" "$monitor_name" "master $orientation $percentage"
 }
 
 # Master-stack layouts for all monitors (original behavior)
@@ -1146,6 +1090,11 @@ center_master_layout_current_monitor() {
     apply_meta_center_sidebar_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
     
     echo "Center master layout applied to current monitor"
+    
+    # Save per-monitor layout
+    local workspace=$(get_current_workspace)
+    IFS=':' read -r monitor_name rest <<< "$current_monitor"
+    save_workspace_monitor_layout "$workspace" "$monitor_name" "master center $percentage"
 }
 
 # Focus navigation
@@ -2102,29 +2051,102 @@ watch_daemon_internal() {
         local current_workspace
         current_workspace=$(xdotool get_desktop 2>/dev/null || echo "0")
         
-        local workspace_layout
-        workspace_layout=$(get_workspace_meta_layout "$current_workspace" 2>/dev/null)
+        # First, try to apply per-monitor layouts
+        get_screen_info
+        local any_monitor_layout_applied=false
         
-        # If no layout set for workspace, use "auto" as fallback
-        if [[ -z "$workspace_layout" ]]; then
-            workspace_layout="auto"
-        fi
+        for monitor in "${MONITORS[@]}"; do
+            IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
+            
+            # Check if there's a layout saved for this specific monitor
+            local monitor_layout
+            monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" 2>/dev/null)
+            
+            # Get windows on this monitor
+            local windows_on_monitor=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && windows_on_monitor+=("$line")
+            done < <(get_visible_windows_on_monitor "$monitor")
+            
+            if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
+                if [[ -n "$monitor_layout" ]]; then
+                    echo "$(date): $trigger_reason - applying monitor-specific layout '$monitor_layout' to monitor $monitor_name"
+                    
+                    # Parse and apply the monitor-specific layout
+                    if [[ "$monitor_layout" == "auto" ]]; then
+                        # Apply auto-layout for this monitor
+                        echo "$(date): Applying saved auto-layout to monitor $monitor_name"
+                        auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
+                        any_monitor_layout_applied=true
+                    elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
+                        local master_params="${BASH_REMATCH[1]}"
+                        echo "$(date): Applying master layout to monitor $monitor_name: $master_params"
+                        
+                        # Parse master parameters (e.g., "vertical 60", "center 50")
+                        read -r orientation percentage <<< "$master_params"
+                        
+                        # Apply to specific monitor
+                        if [[ "$orientation" == "center" ]]; then
+                            apply_meta_center_sidebar_single_monitor "$monitor" "${percentage:-50}" "${windows_on_monitor[@]}"
+                        else
+                            # vertical or horizontal
+                            if [[ "$orientation" == "vertical" ]]; then
+                                apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
+                            else
+                                apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
+                            fi
+                        fi
+                        any_monitor_layout_applied=true
+                    fi
+                else
+                    # No layout saved for this monitor - apply auto-layout for this monitor only
+                    echo "$(date): $trigger_reason - applying auto-layout to monitor $monitor_name (${#windows_on_monitor[@]} windows)"
+                    auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
+                    any_monitor_layout_applied=true
+                fi
+            fi
+        done
         
-        echo "$(date): $trigger_reason - applying layout '$workspace_layout' to workspace $current_workspace"
-        
-        # Small delay to ensure window changes are complete
-        sleep 0.2
-        
-        # Parse layout command properly for meta layouts
-        if [[ "$workspace_layout" =~ ^meta[[:space:]](.+)$ ]]; then
-            # Meta layout - split into separate arguments
-            local meta_command="${BASH_REMATCH[1]}"
-            echo "$(date): Executing meta layout: $meta_command"
-            "$0" meta "$meta_command"
-        else
-            # Regular layout command
-            echo "$(date): Executing regular layout: $workspace_layout"
-            "$0" "$workspace_layout"
+        # If no monitor-specific layouts were applied, fall back to workspace-wide layout
+        if [[ "$any_monitor_layout_applied" == "false" ]]; then
+            local workspace_layout
+            workspace_layout=$(get_workspace_meta_layout "$current_workspace" 2>/dev/null)
+            
+            # If no layout set for workspace, use "auto" as fallback
+            if [[ -z "$workspace_layout" ]]; then
+                workspace_layout="auto"
+            fi
+            
+            echo "$(date): $trigger_reason - applying workspace-wide layout '$workspace_layout' to workspace $current_workspace"
+            
+            # Small delay to ensure window changes are complete
+            sleep 0.2
+            
+            # Parse layout command properly
+            if [[ "$workspace_layout" =~ ^meta[[:space:]](.+)$ ]]; then
+                # Meta layout - split into separate arguments
+                local meta_command="${BASH_REMATCH[1]}"
+                echo "$(date): Executing meta layout: $meta_command"
+                "$0" meta "$meta_command"
+            elif [[ "$workspace_layout" =~ ^master[[:space:]](.+)$ ]]; then
+                # Master layout - parse and execute properly
+                local master_command="${BASH_REMATCH[1]}"
+                echo "$(date): Executing master layout: $master_command"
+                # Execute master command with proper arguments
+                "$0" master $master_command
+            elif [[ "$workspace_layout" =~ ^auto[[:space:]]--all$ ]]; then
+                # Auto layout for all monitors
+                echo "$(date): Executing auto layout for all monitors"
+                "$0" auto --all
+            elif [[ "$workspace_layout" == "auto" ]]; then
+                # Legacy auto - apply to all monitors
+                echo "$(date): Executing auto layout (legacy - all monitors)"
+                "$0" auto --all
+            else
+                # Regular layout command
+                echo "$(date): Executing regular layout: $workspace_layout"
+                "$0" "$workspace_layout"
+            fi
         fi
     }
     
@@ -2246,9 +2268,19 @@ case "${1:-}" in
         fi
         ;;
     auto)
-        # Auto-layout all visible windows
-        auto_layout
-        save_workspace_meta_layout "$(get_current_workspace)" "auto"
+        # Auto-layout - apply to current monitor by default, all monitors with --all
+        if [[ "${2:-}" == "--all" ]]; then
+            # Apply to all monitors
+            auto_layout_all_monitors
+            save_workspace_meta_layout "$(get_current_workspace)" "auto --all"
+        else
+            # Apply to current monitor only (default behavior)
+            auto_layout_current_monitor
+            # Save per-monitor layout
+            local current_monitor=$(get_current_monitor)
+            IFS=':' read -r monitor_name rest <<< "$current_monitor"
+            save_workspace_monitor_layout "$(get_current_workspace)" "$monitor_name" "auto"
+        fi
         ;;
     resize)
         # Simultaneous resize with adjacent windows
@@ -2277,6 +2309,7 @@ case "${1:-}" in
                     percentage="${4:-60}"
                     if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
                         master_stack_layout "$2" "$percentage"
+                        save_workspace_meta_layout "$(get_current_workspace)" "master $2 --all ${percentage}"
                     else
                         if [[ -n "$4" ]]; then
                             echo "Error: Percentage must be 10-90"
@@ -2284,12 +2317,14 @@ case "${1:-}" in
                             exit 1
                         fi
                         master_stack_layout "$2" 60  # Default 60%
+                        save_workspace_meta_layout "$(get_current_workspace)" "master $2 --all 60"
                     fi
                 else
                     # Apply to current monitor only (default behavior)
                     percentage="${3:-60}"
                     if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
                         master_stack_layout_current_monitor "$2" "$percentage"
+                        # Per-monitor saving is handled inside master_stack_layout_current_monitor
                     else
                         if [[ -n "$3" ]]; then
                             echo "Error: Percentage must be 10-90"
@@ -2297,6 +2332,7 @@ case "${1:-}" in
                             exit 1
                         fi
                         master_stack_layout_current_monitor "$2" 60  # Default 60%
+                        # Per-monitor saving is handled inside master_stack_layout_current_monitor
                     fi
                 fi
                 ;;
@@ -2307,7 +2343,7 @@ case "${1:-}" in
                     percentage="${4:-50}"
                     if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
                         apply_meta_center_sidebar "$percentage"
-                        save_workspace_meta_layout "$(get_current_workspace)" "master center-${percentage}"
+                        save_workspace_meta_layout "$(get_current_workspace)" "master center --all ${percentage}"
                     else
                         if [[ -n "$4" ]]; then
                             echo "Error: Percentage must be 10-90"
@@ -2315,14 +2351,14 @@ case "${1:-}" in
                             exit 1
                         fi
                         apply_meta_center_sidebar 50  # Default 50%
-                        save_workspace_meta_layout "$(get_current_workspace)" "master center-50"
+                        save_workspace_meta_layout "$(get_current_workspace)" "master center --all 50"
                     fi
                 else
                     # Apply to current monitor only (default behavior)
                     percentage="${3:-50}"
                     if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
                         center_master_layout_current_monitor "$percentage"
-                        save_workspace_meta_layout "$(get_current_workspace)" "master center-${percentage}"
+                        # Per-monitor saving is handled inside center_master_layout_current_monitor
                     else
                         if [[ -n "$3" ]]; then
                             echo "Error: Percentage must be 10-90"
@@ -2330,7 +2366,7 @@ case "${1:-}" in
                             exit 1
                         fi
                         center_master_layout_current_monitor 50  # Default 50%
-                        save_workspace_meta_layout "$(get_current_workspace)" "master center-50"
+                        # Per-monitor saving is handled inside center_master_layout_current_monitor
                     fi
                 fi
                 ;;
@@ -2754,7 +2790,7 @@ Usage:
   place-window                    Interactive mode
   place-window ul|ur|ll|lr|c      Quick corner/center presets
   place-window left|right|top|bottom|maximize  Half-screen presets
-  place-window auto               Auto-layout all visible windows
+  place-window auto               Auto-layout current monitor (use --all for all)
   place-window auto-config <N> [layout]  Configure auto-layout preferences
   place-window resize <direction> [pixels]  Simultaneous resize with adjacent windows
   place-window master <orientation>  Master-stack layouts
@@ -2845,7 +2881,8 @@ Configuration commands:
 
 Examples:
   place-window                    # Interactive menu
-  place-window auto               # Auto-arrange all visible windows
+  place-window auto               # Auto-arrange current monitor
+  place-window auto --all         # Auto-arrange all monitors
   place-window watch start        # Start automatic tiling daemon
   place-window workspace save work # Save current workspace layout
   place-window swap interactive    # Swap positions of two windows
