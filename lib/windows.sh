@@ -169,6 +169,32 @@ get_visible_windows_by_creation() {
     done
 }
 
+# Get windows sorted by creation order for specific workspace - stable for master layouts  
+get_visible_windows_by_creation_for_workspace() {
+    local target_workspace="$1"
+    
+    # wmctrl -l lists windows in creation order (oldest first)
+    wmctrl -l | while read -r line; do
+        local id=$(echo "$line" | awk '{print $1}')
+        local desktop=$(echo "$line" | awk '{print $2}')
+        
+        # Skip windows not on target workspace
+        [[ "$desktop" != "$target_workspace" && "$desktop" != "-1" ]] && continue
+        
+        # Check if window is minimized
+        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN")
+        [[ -n "$state" ]] && continue
+        
+        # Skip panels, docks, and desktop
+        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            continue
+        fi
+        
+        echo "$id"
+    done
+}
+
 # Get windows sorted by stacking order (most recently active first) - stable for master layouts
 get_visible_windows_by_stacking() {
     local current_desktop=$(xdotool get_desktop)
@@ -243,10 +269,23 @@ get_visible_windows_on_monitor_by_stacking() {
 # Get visible windows on specific monitor, sorted by creation order (oldest first)
 get_visible_windows_on_monitor_by_creation() {
     local monitor="$1"
-    get_visible_windows_by_creation | while read -r id; do
-        local window_monitor=$(get_window_monitor "$id")
-        if [[ "$window_monitor" == "$monitor" ]]; then
-            echo "$id"
-        fi
-    done
+    local workspace="${2:-}"  # Optional workspace parameter with default empty
+    
+    if [[ -n "$workspace" ]]; then
+        # Use provided workspace parameter for consistency
+        get_visible_windows_by_creation_for_workspace "$workspace" | while read -r id; do
+            local window_monitor=$(get_window_monitor "$id")
+            if [[ "$window_monitor" == "$monitor" ]]; then
+                echo "$id"
+            fi
+        done
+    else
+        # Fallback to current desktop detection
+        get_visible_windows_by_creation | while read -r id; do
+            local window_monitor=$(get_window_monitor "$id")
+            if [[ "$window_monitor" == "$monitor" ]]; then
+                echo "$id"
+            fi
+        done
+    fi
 }

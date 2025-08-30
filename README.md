@@ -103,20 +103,35 @@ place-window auto-config 3 three-columns   # Set 3-window layout to columns
 - **4 windows:** grid (2x2), main-three-side, three-top-bottom
 - **5 windows:** center-corners, two-three-columns, grid-wide-bottom
 
-### Watch Mode (Automatic Tiling)
+### Watch Mode (Automatic Tiling Daemon)
+The watch mode runs as a systemd user service for reliable automatic tiling:
+
 ```bash
-place-window watch start        # Start automatic tiling daemon
-place-window watch stop         # Stop the daemon  
+# Service control via place-window
+place-window watch start        # Start the daemon
+place-window watch stop         # Stop the daemon
 place-window watch status       # Check daemon status
+place-window watch enable       # Auto-start on login
+place-window watch disable      # Disable auto-start
+place-window watch restart      # Restart the daemon
+place-window watch logs         # View daemon logs
+
+# Direct systemd control
+systemctl --user start window-positioning
+systemctl --user stop window-positioning
+systemctl --user status window-positioning
+systemctl --user enable window-positioning   # Auto-start on login
 ```
-Watch mode runs in the background and automatically applies auto-layout whenever new windows appear or existing windows close. Perfect for maintaining optimal layouts without manual intervention.
 
 **Features:**
-- Monitors window creation/destruction events
-- Automatically applies configured auto-layout preferences
-- Runs as background daemon until stopped
-- Works with multi-monitor setups
-- Respects all gap and panel settings
+- **Systemd User Service**: Runs as reliable user service with crash recovery
+- **Event-driven**: Efficient X11 property monitoring (not polling)
+- **Resource Efficient**: Uses only 3-4 background processes
+- **Auto-restart**: Automatically restarts on crashes
+- **Persistent**: Can survive logout/login sessions
+- **Workspace Aware**: Only processes windows on current workspace
+- **Multi-monitor Support**: Per-monitor layout management
+- **Layout Persistence**: Applies saved per-workspace layout preferences
 
 **Usage:**
 ```bash

@@ -397,6 +397,9 @@ auto_layout_and_reset_monitor() {
     
     # Apply fresh auto-layout
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
+    
+    # Trigger daemon to immediately apply after clearing preferences
+    trigger_daemon_reapply >/dev/null 2>&1
 }
 
 # Auto-layout current monitor only

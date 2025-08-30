@@ -144,26 +144,28 @@ case "${1:-}" in
                     fi
                 fi
                 ;;
+            center)
+                # Center master layout (current monitor only)
+                percentage="${3:-50}"
+                if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 20 && $percentage -le 80 ]]; then
+                    center_master_layout_current_monitor "$percentage"
+                else
+                    echo "Error: Center width percentage must be between 20 and 80"
+                    exit 1
+                fi
+                ;;
             *)
-                echo "Master-stack layout commands:"
+                echo "Master layout commands:"
                 echo "  place-window master vertical [percentage]   Master on left, stack on right - current monitor"
                 echo "  place-window master horizontal [percentage] Master on top, stack on bottom - current monitor"
+                echo "  place-window master center [percentage]     Center master with sidebars - current monitor"
                 echo "  place-window master vertical --all [percentage]   Apply to all monitors"
                 echo "  place-window master horizontal --all [percentage] Apply to all monitors"
                 echo ""
                 echo "Default master percentage: 60% (range: 10-90)"
+                echo "Default center percentage: 50% (range: 20-80)"
                 ;;
         esac
-        ;;
-    center-master)
-        # Center master layout (current monitor only)
-        percentage="${2:-50}"
-        if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 20 && $percentage -le 80 ]]; then
-            center_master_layout_current_monitor "$percentage"
-        else
-            echo "Error: Center width percentage must be between 20 and 80"
-            exit 1
-        fi
         ;;
     focus)
         # Focus navigation
@@ -211,39 +213,117 @@ case "${1:-}" in
         case "${2:-}" in
             start)
                 if is_daemon_running; then
-                    echo "Watch mode already running (PID: $(get_daemon_pid))"
+                    echo "✓ Daemon already running (PID: $(get_daemon_pid))"
+                    exit 0
+                fi
+                echo "Starting window-positioning daemon..."
+                nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
+                sleep 1
+                if is_daemon_running; then
+                    echo "✓ Daemon started successfully (PID: $(get_daemon_pid))"
+                else
+                    echo "✗ Failed to start daemon"
+                    echo "Check: tail ~/.config/window-positioning/daemon.log"
                     exit 1
                 fi
-                echo "Starting watch mode daemon..."
-                echo "Monitoring for new windows and automatically applying tiling layouts"
-                echo "Press Ctrl+C to stop"
-                echo ""
-                
-                # Start the watch daemon
-                watch_daemon
                 ;;
             stop)
-                stop_daemon
+                if ! is_daemon_running; then
+                    echo "✗ Daemon is not running"
+                    exit 1
+                fi
+                echo "Stopping window-positioning daemon..."
+                pkill -f "place-window.*watch.*daemon"
+                echo "✓ Daemon stopped"
                 ;;
             status)
-                show_daemon_status
+                if is_daemon_running; then
+                    echo "✓ Watch mode is running (XDG autostart)"
+                    echo "PID: $(get_daemon_pid)"
+                    echo "Autostart: $([ -f ~/.config/autostart/window-positioning.desktop ] && echo 'enabled' || echo 'disabled')"
+                else
+                    echo "✗ Watch mode is not running"
+                    echo "Start with: place-window watch start"
+                fi
+                ;;
+            enable)
+                if [ -f ~/.config/autostart/window-positioning.desktop ]; then
+                    echo "✓ Auto-start already enabled (XDG autostart)"
+                else
+                    echo "✗ Auto-start not configured"
+                    echo "Run install script to set up XDG autostart"
+                fi
+                ;;
+            disable)
+                if [ -f ~/.config/autostart/window-positioning.desktop ]; then
+                    echo "Disabling auto-start..."
+                    rm ~/.config/autostart/window-positioning.desktop
+                    echo "✓ Auto-start disabled"
+                else
+                    echo "✓ Auto-start already disabled"
+                fi
+                ;;
+            restart)
+                echo "Restarting window-positioning daemon..."
+                if is_daemon_running; then
+                    pkill -f "place-window.*watch.*daemon"
+                    sleep 1
+                fi
+                nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
+                sleep 1
+                if is_daemon_running; then
+                    echo "✓ Daemon restarted successfully (PID: $(get_daemon_pid))"
+                else
+                    echo "✗ Failed to restart daemon"
+                    exit 1
+                fi
+                ;;
+            logs)
+                echo "Recent logs from window-positioning daemon:"
+                if [ -f ~/.config/window-positioning/daemon.log ]; then
+                    tail -50 ~/.config/window-positioning/daemon.log
+                else
+                    echo "No log file found at ~/.config/window-positioning/daemon.log"
+                fi
                 ;;
             toggle)
-                toggle_daemon
+                if is_daemon_running; then
+                    echo "Daemon is running - stopping..."
+                    pkill -f "place-window.*watch.*daemon"
+                    echo "✓ Daemon stopped"
+                else
+                    echo "Daemon is not running - starting..."
+                    nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
+                    sleep 1
+                    if is_daemon_running; then
+                        echo "✓ Daemon started successfully (PID: $(get_daemon_pid))"
+                    else
+                        echo "✗ Failed to start daemon"
+                        exit 1
+                    fi
+                fi
                 ;;
             daemon)
-                # Internal daemon mode - do not call directly
+                # Internal daemon mode - called by XDG autostart or manually
+                DAEMON_MODE=true
                 watch_daemon_internal
                 ;;
             *)
-                echo "Watch mode commands:"
-                echo "  place-window watch start    Start automatic tiling daemon"
-                echo "  place-window watch stop     Stop the daemon"
-                echo "  place-window watch status   Check daemon status"
-                echo "  place-window watch toggle   Toggle daemon on/off"
+                echo "Watch mode commands (XDG autostart daemon):"
+                echo "  place-window watch start     Start the daemon"
+                echo "  place-window watch stop      Stop the daemon"
+                echo "  place-window watch toggle    Toggle daemon on/off"
+                echo "  place-window watch restart   Restart the daemon"
+                echo "  place-window watch status    Check daemon status"
+                echo "  place-window watch enable    Check auto-start status"
+                echo "  place-window watch disable   Remove auto-start"
+                echo "  place-window watch logs      View daemon logs"
                 echo ""
-                echo "Watch mode automatically applies the last-used layout per workspace"
-                echo "when windows are created, minimized, or maximized"
+                echo "The daemon monitors window events and automatically applies"
+                echo "tiling layouts when windows are created, minimized, or restored."
+                echo ""
+                echo "Auto-start is configured via XDG autostart:"
+                echo "  ~/.config/autostart/window-positioning.desktop"
                 ;;
         esac
         ;;
@@ -278,6 +358,20 @@ case "${1:-}" in
                     fi
                 fi
                 ;;
+            autohide)
+                if [[ -z "${3:-}" ]]; then
+                    echo "Current panel auto-hide: ${PANEL_AUTOHIDE}"
+                else
+                    if [[ "$3" == "true" || "$3" == "false" ]]; then
+                        update_setting "PANEL_AUTOHIDE" "$3"
+                        PANEL_AUTOHIDE=$3
+                        echo "Panel auto-hide set to $3"
+                    else
+                        echo "Error: Panel auto-hide must be 'true' or 'false'"
+                        exit 1
+                    fi
+                fi
+                ;;
             show)
                 echo "Current configuration:"
                 echo "  Gap: ${GAP}px"
@@ -295,6 +389,7 @@ case "${1:-}" in
                 echo "Configuration commands:"
                 echo "  place-window config gap [pixels]        Set/show gap size"
                 echo "  place-window config panel [pixels]      Set/show panel height"
+                echo "  place-window config autohide [true/false] Set/show panel auto-hide"
                 echo "  place-window config show                Show all settings"
                 echo "  place-window config detect-decorations  Auto-detect window decorations"
                 ;;
@@ -329,9 +424,9 @@ Auto-layout system:
 
 Master-stack layouts:
   place-window master vertical [%]    Master on left (current monitor)
-  place-window master horizontal [%]  Master on top (current monitor)  
+  place-window master horizontal [%]  Master on top (current monitor)
+  place-window master center [%]      Center master with sidebars (current monitor)
   place-window master vertical --all [%]  Apply to all monitors
-  place-window center-master [%]      Center master with sidebars
 
 Focus navigation:
   place-window focus next/prev     Cycle through windows

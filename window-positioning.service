@@ -1,0 +1,34 @@
+[Unit]
+Description=Window Positioning Daemon for Qubes OS
+Documentation=https://github.com/yourusername/window-positioning
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/place-window watch daemon
+Restart=on-failure
+RestartSec=3
+
+# Environment - systemd user services should inherit DISPLAY and XAUTHORITY
+# But we can be explicit if needed
+Environment="DISPLAY=:0"
+
+# Resource limits to prevent runaway daemon
+CPUQuota=10%
+MemoryHigh=100M
+MemoryMax=200M
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/window-positioning
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

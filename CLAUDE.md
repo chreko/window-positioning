@@ -160,12 +160,20 @@ place-window master vertical                     # Master-stack layout
 place-window center-master                       # Center-focused layout
 ```
 
-### Watch Mode (Auto-Tiling Daemon)
+### Watch Mode (Systemd User Service)
 ```bash
-place-window watch start        # Start background auto-tiling
-place-window watch stop         # Stop daemon
-place-window watch toggle       # Toggle daemon state
+# Service control via place-window wrapper
+place-window watch start        # Start the daemon
+place-window watch stop         # Stop the daemon
 place-window watch status       # Check daemon status
+place-window watch enable       # Auto-start on login
+place-window watch disable      # Disable auto-start
+place-window watch restart      # Restart the daemon
+place-window watch logs         # View daemon logs
+
+# Direct systemd control
+systemctl --user start/stop/status window-positioning
+systemctl --user enable window-positioning  # Auto-start on login
 ```
 
 ### Focus and Navigation

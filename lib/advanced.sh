@@ -143,7 +143,10 @@ master_stack_layout_current_monitor() {
     # Save per-monitor layout
     local workspace=$(get_current_workspace)
     IFS=':' read -r monitor_name rest <<< "$current_monitor"
-    save_workspace_monitor_layout "$workspace" "$monitor_name" "$num_windows" "master $orientation $percentage"
+    save_workspace_monitor_layout "$workspace" "$monitor_name" "master $orientation $percentage" ""
+    
+    # Trigger daemon to immediately reapply with new preference
+    trigger_daemon_reapply >/dev/null 2>&1
 }
 
 # Master-stack layouts for all monitors
@@ -220,7 +223,10 @@ center_master_layout_current_monitor() {
     # Save per-monitor layout
     local workspace=$(get_current_workspace)
     IFS=':' read -r monitor_name rest <<< "$current_monitor"
-    save_workspace_monitor_layout "$workspace" "$monitor_name" "$num_windows" "master center $percentage"
+    save_workspace_monitor_layout "$workspace" "$monitor_name" "master center $percentage" ""
+    
+    # Trigger daemon to immediately reapply with new preference
+    trigger_daemon_reapply >/dev/null 2>&1
 }
 
 # Minimize all windows except the active one

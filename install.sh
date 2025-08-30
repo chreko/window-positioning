@@ -4,7 +4,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_BIN_DIR="/usr/local/bin"
+INSTALL_LIB_DIR="/usr/local/lib/place-window"
 
 # Get the real user (not root when using sudo)
 REAL_USER="${SUDO_USER:-$USER}"
@@ -15,6 +16,7 @@ echo "Window Positioning Tool Installer for Qubes OS dom0"
 echo "=================================================="
 echo "Installing for user: $REAL_USER (home: $REAL_HOME)"
 echo "Config will be created at: $CONFIG_DIR"
+echo "Libraries will be installed to: $INSTALL_LIB_DIR"
 echo ""
 
 # Check if running in dom0
@@ -47,11 +49,58 @@ if [[ ${#missing_tools[@]} -gt 0 ]]; then
     fi
 fi
 
-# Install the script
-echo "Installing place-window script..."
-sudo cp "$SCRIPT_DIR/place-window" "$INSTALL_DIR/"
-sudo chmod +x "$INSTALL_DIR/place-window"
-echo "✓ Installed to $INSTALL_DIR/place-window"
+# Create library directory
+echo "Creating library directory..."
+sudo mkdir -p "$INSTALL_LIB_DIR"
+
+# Install library modules
+echo "Installing library modules..."
+for lib_file in "$SCRIPT_DIR"/lib/*.sh; do
+    if [[ -f "$lib_file" ]]; then
+        lib_name=$(basename "$lib_file")
+        sudo cp "$lib_file" "$INSTALL_LIB_DIR/"
+        sudo chmod 644 "$INSTALL_LIB_DIR/$lib_name"
+        echo "  ✓ Installed $lib_name"
+    fi
+done
+
+# Create a wrapper script that knows where the libraries are
+echo "Creating main executable..."
+cat << 'EOF' > /tmp/place-window-wrapper
+#!/usr/bin/env bash
+# place-window: Position windows in dom0 with mouse selection or window ID
+# This is a wrapper that sets up the library path
+
+set -euo pipefail
+
+# Set the library directory location
+INSTALL_LIB_DIR="/usr/local/lib/place-window"
+
+# Source all library modules
+source "$INSTALL_LIB_DIR/config.sh"
+source "$INSTALL_LIB_DIR/monitors.sh" 
+source "$INSTALL_LIB_DIR/windows.sh"
+source "$INSTALL_LIB_DIR/layouts.sh"
+source "$INSTALL_LIB_DIR/daemon.sh"
+source "$INSTALL_LIB_DIR/interactive.sh"
+source "$INSTALL_LIB_DIR/advanced.sh"
+
+# Initialize configuration
+init_config
+load_config
+
+# Check if running in daemon mode (prevent interactive prompts)
+DAEMON_MODE=${DAEMON_MODE:-false}
+
+EOF
+
+# Append the main logic from place-window (skip the library sourcing part)
+sed -n '/^# Main command processing/,$p' "$SCRIPT_DIR/place-window" >> /tmp/place-window-wrapper
+
+# Install the wrapper script
+sudo mv /tmp/place-window-wrapper "$INSTALL_BIN_DIR/place-window"
+sudo chmod +x "$INSTALL_BIN_DIR/place-window"
+echo "✓ Installed main script to $INSTALL_BIN_DIR/place-window"
 
 # Create config directory and default configuration
 echo "Setting up configuration for user: $REAL_USER"
@@ -194,10 +243,51 @@ Description: Top half of screen
 Command: place-window bottom
 Key: Super+Shift+Down
 Description: Bottom half of screen
+
+Command: place-window auto
+Key: Super+Shift+A
+Description: Auto-arrange all windows
+
+Command: place-window master vertical
+Key: Super+Shift+M
+Description: Master-stack layout
+
+Command: place-window watch toggle
+Key: Super+Shift+W
+Description: Toggle watch mode daemon
+
+Command: place-window minimize-others
+Key: Super+Shift+O
+Description: Minimize all except active window
 EOF
 
 chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/keyboard-shortcuts.txt" 2>/dev/null || true
 echo "✓ Created keyboard shortcuts reference"
+
+# Install XDG autostart service (more reliable for X11 applications)
+echo "Installing XDG autostart service..."
+AUTOSTART_DIR="${REAL_HOME}/.config/autostart"
+mkdir -p "$AUTOSTART_DIR"
+chown "$REAL_USER:$REAL_USER" "$AUTOSTART_DIR" 2>/dev/null || true
+
+# Create XDG autostart desktop file
+cat > "$AUTOSTART_DIR/window-positioning.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Window Positioning Daemon
+Comment=Automatic window tiling daemon for QubesOS dom0
+Exec=/usr/local/bin/place-window watch daemon
+Icon=preferences-system-windows
+Categories=System;
+X-GNOME-Autostart-enabled=true
+X-XFCE-Autostart-enabled=true
+X-XFCE-Autostart-Delay=5
+Hidden=false
+StartupNotify=false
+EOF
+
+chown "$REAL_USER:$REAL_USER" "$AUTOSTART_DIR/window-positioning.desktop" 2>/dev/null || true
+echo "✓ Installed XDG autostart service"
 
 # Create uninstaller
 cat > "$CONFIG_DIR/uninstall.sh" << EOF
@@ -205,8 +295,22 @@ cat > "$CONFIG_DIR/uninstall.sh" << EOF
 # Uninstaller for window positioning tool
 
 echo "Removing window positioning tool..."
-sudo rm -f "/usr/local/bin/place-window"
-echo "✓ Removed script from /usr/local/bin/"
+
+# Stop daemon if running
+if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+    echo "Stopping window-positioning daemon..."
+    pkill -f "place-window.*watch.*daemon"
+fi
+
+# Remove XDG autostart file
+rm -f "$AUTOSTART_DIR/window-positioning.desktop"
+echo "✓ Removed XDG autostart service"
+
+sudo rm -f "$INSTALL_BIN_DIR/place-window"
+echo "✓ Removed script from $INSTALL_BIN_DIR"
+
+sudo rm -rf "$INSTALL_LIB_DIR"
+echo "✓ Removed library modules from $INSTALL_LIB_DIR"
 
 read -p "Also remove configuration directory $CONFIG_DIR? [y/N]: " confirm
 if [[ "\$confirm" == [yY] ]]; then
@@ -226,28 +330,42 @@ echo ""
 echo "Installation Complete!"
 echo "====================="
 echo ""
+echo "Installed components:"
+echo "  Main script: $INSTALL_BIN_DIR/place-window"
+echo "  Libraries:   $INSTALL_LIB_DIR/"
+echo "  Config:      $CONFIG_DIR/"
+echo ""
 echo "Usage:"
 echo "  place-window              # Interactive mode"
-echo "  place-window ul           # Quick upper-left positioning with gaps"
-echo "  place-window config gap 15 # Set 15px gaps around windows"
+echo "  place-window ul           # Quick upper-left positioning"
+echo "  place-window auto         # Auto-arrange windows"
 echo "  place-window help         # Full help"
 echo ""
-echo "Configuration directory: $CONFIG_DIR"
-echo "• Edit settings.conf to customize gaps, panel height, etc."
-echo "• Edit presets.conf to customize window positions"
-echo "• See keyboard-shortcuts.txt for XFCE shortcut setup"
-echo "• Run uninstall.sh to remove the tool"
+echo "Systemd Service Control:"
+echo "  systemctl --user start window-positioning    # Start daemon"
+echo "  systemctl --user stop window-positioning     # Stop daemon"
+echo "  systemctl --user status window-positioning   # Check status"
+echo "  systemctl --user enable window-positioning   # Auto-start on login"
+echo "  systemctl --user disable window-positioning  # Disable auto-start"
 echo ""
-echo "Gap feature:"
-echo "• Default gap: 10px around all windows"
-echo "• Configurable via: place-window config gap <SIZE>"
-echo "• Interactive mode allows real-time gap adjustment"
+echo "Configuration:"
+echo "• Edit $CONFIG_DIR/settings.conf to customize gaps, panel height, etc."
+echo "• Edit $CONFIG_DIR/presets.conf to customize window positions"
+echo "• See $CONFIG_DIR/keyboard-shortcuts.txt for XFCE shortcut setup"
+echo "• Run $CONFIG_DIR/uninstall.sh to remove the tool"
+echo ""
+echo "Key features:"
+echo "• Modular architecture with focused library components"
+echo "• Watch mode daemon for automatic window tiling"
+echo "• Multi-monitor support with per-monitor layouts"
+echo "• Master-stack layouts (vertical/horizontal/center)"
+echo "• Focus navigation and window swapping"
+echo "• Configurable gaps and panel handling"
 echo ""
 echo "To test: Run 'place-window' and click on any window"
 echo ""
 echo "Next steps:"
 echo "1. Test the tool: place-window"
-echo "2. Adjust gap size: place-window config gap <SIZE>"
-echo "3. Set up keyboard shortcuts (see $CONFIG_DIR/keyboard-shortcuts.txt)"
+echo "2. Set up keyboard shortcuts (see $CONFIG_DIR/keyboard-shortcuts.txt)"
+echo "3. Enable auto-tiling daemon: systemctl --user enable --now window-positioning"
 echo "4. Customize settings in $CONFIG_DIR/settings.conf"
-echo "5. Add custom presets in $CONFIG_DIR/presets.conf"
