@@ -40,7 +40,7 @@ watch_daemon_internal() {
             local windows_on_monitor=()
             while IFS= read -r line; do
                 [[ -n "$line" ]] && windows_on_monitor+=("$line")
-            done < <(get_visible_windows_on_monitor_by_position "$monitor")
+            done < <(get_visible_windows_on_monitor_by_creation "$monitor")
             
             if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
                 if [[ -n "$monitor_layout" ]]; then

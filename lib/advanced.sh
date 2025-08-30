@@ -119,7 +119,7 @@ master_stack_layout_current_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_position "$current_monitor")
+    done < <(get_visible_windows_on_monitor_by_creation "$current_monitor")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -150,7 +150,7 @@ master_stack_layout_current_monitor() {
 master_stack_layout() {
     local orientation="$1"  # vertical or horizontal
     local percentage="${2:-60}"  # master window percentage (default 60%)
-    local windows=($(get_visible_windows_by_position))
+    local windows=($(get_visible_windows_by_creation))
     local count=${#windows[@]}
     
     if [[ $count -lt 2 ]]; then
@@ -202,7 +202,7 @@ center_master_layout_current_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_position "$current_monitor")
+    done < <(get_visible_windows_on_monitor_by_creation "$current_monitor")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -280,7 +280,7 @@ minimize_others() {
             local windows_on_monitor=()
             while IFS= read -r line; do
                 [[ -n "$line" ]] && windows_on_monitor+=("$line")
-            done < <(get_visible_windows_on_monitor_by_position "$current_monitor")
+            done < <(get_visible_windows_on_monitor_by_creation "$current_monitor")
             
             if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
                 if [[ -n "$monitor_layout" ]]; then
@@ -447,12 +447,14 @@ swap_window_positions() {
     apply_geometry "$window1" "$x2" "$y2" "$w1" "$h1"
     apply_geometry "$window2" "$x1" "$y1" "$w2" "$h2"
     
+    # Note: The swap changes visual positions, so if in a master layout,
+    # the user should re-apply the master command to update master assignment
     echo "Windows swapped successfully"
 }
 
 # Cycle window positions clockwise
 cycle_window_positions() {
-    local windows=($(get_visible_windows_by_position))
+    local windows=($(get_visible_windows_by_creation))
     local count=${#windows[@]}
     
     if [[ $count -lt 2 ]]; then
@@ -476,12 +478,14 @@ cycle_window_positions() {
         apply_geometry "${windows[i]}" "$x" "$y" "$w" "$h"
     done
     
+    # Note: Cycling changes which window is in the master position
+    # Re-apply master layout if you want to update master assignment
     echo "Window positions cycled clockwise"
 }
 
 # Reverse cycle window positions (counter-clockwise)
 reverse_cycle_window_positions() {
-    local windows=($(get_visible_windows_by_position))
+    local windows=($(get_visible_windows_by_creation))
     local count=${#windows[@]}
     
     if [[ $count -lt 2 ]]; then
@@ -505,5 +509,7 @@ reverse_cycle_window_positions() {
         apply_geometry "${windows[i]}" "$x" "$y" "$w" "$h"
     done
     
+    # Note: Cycling changes which window is in the master position
+    # Re-apply master layout if you want to update master assignment
     echo "Window positions cycled counter-clockwise"
 }

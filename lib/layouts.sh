@@ -17,15 +17,6 @@ init_layout_vars() {
     final_h=$((usable_h - gap * 2 - decoration_h))
 }
 
-# Gather windows for a specific monitor (used in 6+ functions)
-gather_monitor_windows() {
-    local monitor="$1"
-    local window_list=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && window_list+=("$line")
-    done < <(get_visible_windows_on_monitor_by_position "$monitor")
-    printf '%s\n' "${window_list[@]}"
-}
 
 # Maximize single window, minimize others
 apply_meta_maximize_single_monitor() {
@@ -181,18 +172,17 @@ apply_meta_topbar_main_single_monitor() {
     local main_h=$((available_h - topbar_h))
     local main_y=$((final_y + topbar_h + gap_vertical))
     
-    # Position main window (last window) - takes full width at bottom
-    local main_window_index=$((num_windows - 1))
-    apply_geometry "${window_list[main_window_index]}" $final_x $main_y $final_w $main_h
+    # Position main window (first window) - takes full width at bottom
+    apply_geometry "${window_list[0]}" $final_x $main_y $final_w $main_h
     
-    # Position topbar windows (all except last) in columns
+    # Position topbar windows (all except first) in columns
     local topbar_windows=$((num_windows - 1))
     if [[ $topbar_windows -gt 0 ]]; then
         local available_topbar_w=$((final_w - gap * (topbar_windows - 1)))
         local topbar_column_w=$((available_topbar_w / topbar_windows))
         
-        for ((i=0; i<topbar_windows; i++)); do
-            local topbar_x=$((final_x + i * (topbar_column_w + gap)))
+        for ((i=1; i<num_windows; i++)); do
+            local topbar_x=$((final_x + (i - 1) * (topbar_column_w + gap)))
             apply_geometry "${window_list[i]}" $topbar_x $final_y $topbar_column_w $topbar_h
         done
     fi
@@ -240,6 +230,7 @@ apply_meta_center_corners_single_monitor() {
 }
 
 # Center-sidebar layout (3-column: left sidebar | center master | right sidebar)
+# Uses stable stacking order - most recently active window becomes center master
 apply_meta_center_sidebar_single_monitor() {
     local monitor="$1"
     local center_width_percent="$2"
@@ -276,7 +267,7 @@ apply_meta_center_sidebar_single_monitor() {
     local center_x=$((final_x + sidebar_w + gap_between))
     local right_sidebar_x=$((center_x + center_w + gap_between))
     
-    # Position center window (first window)
+    # Position center window (first window in stable list)
     apply_geometry "${window_list[0]}" $center_x $final_y $center_w $final_h
     
     # Distribute remaining windows between left and right sidebars
@@ -402,7 +393,7 @@ auto_layout_and_reset_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_position "$monitor")
+    done < <(get_visible_windows_on_monitor_by_creation "$monitor")
     
     # Apply fresh auto-layout
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
@@ -430,7 +421,7 @@ auto_layout_all_monitors() {
         local windows_on_monitor=()
         while IFS= read -r line; do
             [[ -n "$line" ]] && windows_on_monitor+=("$line")
-        done < <(get_visible_windows_on_monitor_by_position "$monitor")
+        done < <(get_visible_windows_on_monitor_by_creation "$monitor")
         
         # Apply layout to this monitor
         if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then

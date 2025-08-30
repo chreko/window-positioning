@@ -143,10 +143,107 @@ get_visible_windows_by_position() {
     printf '%s\n' "${window_data[@]}" | sort -t: -k3,3n -k2,2n -k4,4n | cut -d: -f1
 }
 
+# Get windows sorted by creation order (oldest first) - stable for master layouts
+get_visible_windows_by_creation() {
+    local current_desktop=$(xdotool get_desktop)
+    
+    # wmctrl -l lists windows in creation order (oldest first)
+    wmctrl -l | while read -r line; do
+        local id=$(echo "$line" | awk '{print $1}')
+        local desktop=$(echo "$line" | awk '{print $2}')
+        
+        # Skip windows not on current desktop
+        [[ "$desktop" != "$current_desktop" && "$desktop" != "-1" ]] && continue
+        
+        # Check if window is minimized
+        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN")
+        [[ -n "$state" ]] && continue
+        
+        # Skip panels, docks, and desktop
+        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            continue
+        fi
+        
+        echo "$id"
+    done
+}
+
+# Get windows sorted by stacking order (most recently active first) - stable for master layouts
+get_visible_windows_by_stacking() {
+    local current_desktop=$(xdotool get_desktop)
+    
+    # Get stacking order from X11 (bottom to top)
+    local stacking_order=()
+    local stacking_raw=$(xprop -root _NET_CLIENT_LIST_STACKING 2>/dev/null | grep "window id" | sed 's/.*window id # //; s/,//g')
+    if [[ -n "$stacking_raw" ]]; then
+        read -ra stacking_order <<< "$stacking_raw"
+    fi
+    
+    # Get all visible windows with their Z-order
+    local window_data=()
+    
+    # Use process substitution to avoid subshell
+    while IFS= read -r line; do
+        local id=$(echo "$line" | awk '{print $1}')
+        local desktop=$(echo "$line" | awk '{print $2}')
+        
+        # Skip windows not on current desktop
+        [[ "$desktop" != "$current_desktop" && "$desktop" != "-1" ]] && continue
+        
+        # Check if window is minimized or maximized
+        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED")
+        [[ -n "$state" ]] && continue
+        
+        # Skip panels, docks, and desktop
+        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            continue
+        fi
+        
+        # Find Z-order index (higher index = more recent = lower sort value)
+        local z_index=-1
+        for ((i=${#stacking_order[@]}-1; i>=0; i--)); do
+            if [[ "${stacking_order[i]}" == "$id" ]]; then
+                z_index=$((${#stacking_order[@]} - i))  # Reverse so most recent is first
+                break
+            fi
+        done
+        
+        # Store: "id:z_index"
+        window_data+=("$id:$z_index")
+    done < <(wmctrl -l)
+    
+    # Sort by Z-order (most recent first)
+    printf '%s\n' "${window_data[@]}" | sort -t: -k2,2nr | cut -d: -f1
+}
+
 # Get visible windows on specific monitor, sorted by position
 get_visible_windows_on_monitor_by_position() {
     local monitor="$1"
     get_visible_windows_by_position | while read -r id; do
+        local window_monitor=$(get_window_monitor "$id")
+        if [[ "$window_monitor" == "$monitor" ]]; then
+            echo "$id"
+        fi
+    done
+}
+
+# Get visible windows on specific monitor, sorted by stacking (most recent first)
+get_visible_windows_on_monitor_by_stacking() {
+    local monitor="$1"
+    get_visible_windows_by_stacking | while read -r id; do
+        local window_monitor=$(get_window_monitor "$id")
+        if [[ "$window_monitor" == "$monitor" ]]; then
+            echo "$id"
+        fi
+    done
+}
+
+# Get visible windows on specific monitor, sorted by creation order (oldest first)
+get_visible_windows_on_monitor_by_creation() {
+    local monitor="$1"
+    get_visible_windows_by_creation | while read -r id; do
         local window_monitor=$(get_window_monitor "$id")
         if [[ "$window_monitor" == "$monitor" ]]; then
             echo "$id"
