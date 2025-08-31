@@ -68,17 +68,28 @@ monitor_should_apply() {
   (( now >= COOLDOWN_UNTIL_MS ))
 }
 
-# Window detection function for SSOT system
+# Window detection function that respects SSOT first, then falls back to spatial order for bootstrap
 list_windows_on_monitor_for_workspace() {  # ws mon_name -> echo "winids..."
     local ws="$1" mon="$2"
 
-    # Use existing workspace function, then filter by monitor
-    get_visible_windows_by_creation_for_workspace "$ws" | while read -r id; do
-        local window_monitor=$(get_window_monitor "$id")
-        if [[ "${window_monitor%%:*}" == "$mon" ]]; then
-            echo "$id"
+    # 1) If SSOT already exists for this (workspace, monitor), use it verbatim
+    local stored
+    stored="$(get_window_list "$ws" "$mon")"
+    if [[ -n "$stored" ]]; then
+        echo "$stored"
+        return 0
+    fi
+
+    # 2) Bootstrap order from spatial position (left-to-right, then top-to-bottom)
+    #    This is much closer to what the user sees than creation order.
+    wmctrl -lG 2>/dev/null | awk -v ws="$ws" '
+        $2 == ws { printf "%s %s %s %s %s\n", $1, $3, $4, $5, $6 }' |
+    while read -r wid x y w h; do
+        # Keep only windows on this monitor
+        if [[ "$(get_window_monitor "$wid" | cut -d: -f1)" == "$mon" ]]; then
+            printf "%s %s %s\n" "$wid" "$x" "$y"
         fi
-    done
+    done | sort -k2,2n -k3,3n | awk '{print $1}'
 }
 
 # Get windows sorted by creation order for specific workspace - stable for master layouts  
@@ -203,7 +214,7 @@ watch_daemon_with_ipc() {
     exec 3<>"$DAEMON_CMD_PIPE"
     exec 4<>"$DAEMON_RESP_PIPE"
 
-    local TICK=0.25  # seconds
+    local TICK=0.75  # seconds - increased for better stability
 
     echo "$(date): entering main loop"
     while true; do
@@ -950,6 +961,8 @@ swap_window_positions() {
             if [[ -n "$result" ]]; then
                 read -r window1_pos window2_pos <<< "$result"
                 
+                # Add hold to prevent monitor from immediately reconciling the change
+                hold_now "$current_workspace" "$(echo "$monitor1" | cut -d: -f1)" 900
                 # Add cooldown to prevent monitor from immediately re-detecting and flickering
                 cooldown_now 600
                 # Directly reapply the saved layout for this monitor
