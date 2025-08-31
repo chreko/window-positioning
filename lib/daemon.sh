@@ -1024,11 +1024,7 @@ cycle_window_positions() {
             [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon_name" ]] && echo "$id $x $y"
         done | sort -k2,2n -k3,3n | awk '{print $1}'
     )
-    local n="${#WIDS[@]}"
-    if (( n < 2 )); then 
-        echo "Need at least 2 windows on current monitor to cycle"
-        return 0
-    fi
+    local n="${#WIDS[@]}"; (( n < 2 )) && { echo "Nothing to cycle"; return 0; }
 
     # 2) Capture geometries in the same order
     local GEOMS=()
@@ -1047,7 +1043,7 @@ cycle_window_positions() {
         place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
     done
 
-    echo "Cycled by swapping geometries across ${#WIDS[@]} window(s) clockwise"
+    echo "Cycled ${#WIDS[@]} window(s) on monitor $mon_name"
 }
 
 # Reverse cycle window positions (counter-clockwise, current monitor only)
@@ -1064,11 +1060,7 @@ reverse_cycle_window_positions() {
             [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon_name" ]] && echo "$id $x $y"
         done | sort -k2,2n -k3,3n | awk '{print $1}'
     )
-    local n="${#WIDS[@]}"
-    if (( n < 2 )); then 
-        echo "Need at least 2 windows on current monitor to cycle"
-        return 0
-    fi
+    local n="${#WIDS[@]}"; (( n < 2 )) && { echo "Nothing to cycle"; return 0; }
 
     # 2) Capture geometries in the same order
     local GEOMS=()
@@ -1086,7 +1078,7 @@ reverse_cycle_window_positions() {
         place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
     done
 
-    echo "Cycled by swapping geometries across ${#WIDS[@]} window(s) counter-clockwise"
+    echo "Reverse cycled ${#WIDS[@]} window(s) on monitor $mon_name"
 }
 
 #========================================
