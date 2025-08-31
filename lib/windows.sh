@@ -542,15 +542,35 @@ export -f get_window_list
 export -f set_window_list
 export -f swap_windows_in_list
 
-# Get visible windows on monitor sorted by creation order (backward compatibility)
+# Get visible windows on monitor - respects SSOT first, then falls back to spatial order
 get_visible_windows_on_monitor_by_creation() {
     local monitor="$1"
+    local workspace="${2:-$(get_current_workspace)}"
     
-    # Simple fallback to creation order for backward compatibility
-    get_visible_windows_by_creation | while read -r id; do
-        local window_monitor=$(get_window_monitor "$id")
-        if [[ "$window_monitor" == "$monitor" ]]; then
-            echo "$id"
+    # Extract monitor name from full monitor string
+    local monitor_name
+    if [[ "$monitor" == *:* ]]; then
+        monitor_name="${monitor%%:*}"
+    else
+        monitor_name="$monitor"
+    fi
+    
+    # 1) If SSOT already exists for this (workspace, monitor), use it verbatim
+    local stored
+    stored="$(get_window_list "$workspace" "$monitor_name")"
+    if [[ -n "$stored" ]]; then
+        echo "$stored"
+        return 0
+    fi
+
+    # 2) Bootstrap order from spatial position (left-to-right, then top-to-bottom)
+    #    This is much closer to what the user sees than creation order.
+    wmctrl -lG 2>/dev/null | awk -v ws="$workspace" '
+        $2 == ws { printf "%s %s %s %s %s\n", $1, $3, $4, $5, $6 }' |
+    while read -r wid x y w h; do
+        # Keep only windows on this monitor
+        if [[ "$(get_window_monitor "$wid" | cut -d: -f1)" == "$monitor_name" ]]; then
+            printf "%s %s %s\n" "$wid" "$x" "$y"
         fi
-    done
+    done | sort -k2,2n -k3,3n | awk '{print $1}'
 }
