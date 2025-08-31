@@ -31,6 +31,23 @@ source "$DAEMON_DIR/layouts.sh"
 # Dirty and generation tracking for daemon's reconciliation logic
 declare -Ag WINDOW_DIRTY WINDOW_GEN 2>/dev/null || true
 
+# Hold map to protect manual operations from immediate reconciliation
+declare -Ag HOLD_UNTIL_MS 2>/dev/null || true
+
+hold_now() {  # ws mon_name [ms]
+  local ws="$1" mon="$2" ms="${3:-900}"
+  local now; now=$(date +%s%3N)
+  local k="workspace_${ws}_monitor_${mon}"
+  HOLD_UNTIL_MS["$k"]=$(( now + ms ))
+}
+
+should_hold() {  # ws mon_name
+  local ws="$1" mon="$2" now k
+  now=$(date +%s%3N)
+  k="workspace_${ws}_monitor_${mon}"
+  [[ ${HOLD_UNTIL_MS["$k"]-0} -gt $now ]]
+}
+
 # Locks are no-ops in single-process mode; harmless if you later add flock
 state_lock()   { :; }
 state_unlock() { :; }
@@ -513,8 +530,8 @@ reconcile_ws_mon() {  # args: workspace monitor_name
         fi
     done
 
-    # Only update SSOT if membership actually changed
-    if [[ $removed -eq 1 || $added -eq 1 ]]; then
+    # Only update SSOT if membership changed (ignore order-only differences)
+    if [[ "$(tr ' ' '\n' <<< "$stored" | sort -u)" != "$(tr ' ' '\n' <<< "$updated" | sort -u)" ]]; then
         set_window_list "$ws" "$mon" "$updated"
         WINDOW_DIRTY["$k"]=1
         WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
@@ -528,6 +545,11 @@ monitor_tick() {
     get_screen_info  # refresh monitors
     for mon in "${MONITORS[@]}"; do
         IFS=':' read -r monitor_name mx my mw mh <<< "$mon"
+
+        # Skip reconcile/apply during manual operation hold
+        if should_hold "$ws" "$monitor_name"; then
+            continue
+        fi
 
         reconcile_ws_mon "$ws" "$monitor_name"
 
@@ -992,6 +1014,8 @@ cycle_window_positions() {
     # Update the persistent window list
     set_window_list "$current_workspace" "$monitor_name" "$new_list"
     
+    # Add hold to prevent monitor from immediately reconciling the change
+    hold_now "$current_workspace" "$monitor_name" 900
     # Add cooldown to prevent monitor from immediately re-detecting and flickering
     cooldown_now 600
     # Directly reapply the saved layout for this monitor
@@ -1037,6 +1061,8 @@ reverse_cycle_window_positions() {
     # Update the persistent window list
     set_window_list "$current_workspace" "$monitor_name" "$new_list"
     
+    # Add hold to prevent monitor from immediately reconciling the change
+    hold_now "$current_workspace" "$monitor_name" 900
     # Add cooldown to prevent monitor from immediately re-detecting and flickering
     cooldown_now 600
     # Directly reapply the saved layout for this monitor
