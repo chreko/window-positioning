@@ -68,6 +68,24 @@ monitor_should_apply() {
   (( now >= COOLDOWN_UNTIL_MS ))
 }
 
+# Geometry helper functions for stateless cycle operations
+get_window_geometry() {
+    local wid="$1"
+    # Get window geometry using xdotool (returns client area)
+    local geometry
+    geometry=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -E '(Position|Geometry)' | awk '{print $2}' | paste -sd':')
+    if [[ -n "$geometry" ]]; then
+        # Format: x,y (WIDTHxHEIGHT) -> x:y:w:h
+        echo "$geometry" | sed 's/,/:/; s/ (/:/; s/x/:/; s/)//'
+    fi
+}
+
+place_window_geometry() {
+    local wid="$1" x="$2" y="$3" w="$4" h="$5"
+    # Apply geometry using wmctrl
+    wmctrl -i -r "$wid" -e "0,$x,$y,$w,$h" 2>/dev/null
+}
+
 # Window detection function that respects SSOT first, then falls back to spatial order for bootstrap
 list_windows_on_monitor_for_workspace() {  # ws mon_name -> echo "winids..."
     local ws="$1" mon="$2"
@@ -992,96 +1010,83 @@ swap_window_positions() {
     fi
 }
 
-# Cycle window positions clockwise (current monitor only)
+# Cycle window positions clockwise (current monitor only) - stateless geometry swap
 cycle_window_positions() {
-    # Get current workspace and monitor info
-    local current_workspace=$(get_current_workspace)
+    local ws mon_name
+    ws="$(get_current_workspace)"
     get_screen_info
-    local current_monitor=$(get_current_monitor)
-    local monitor_name=$(echo "$current_monitor" | cut -d':' -f1)
-    
-    # Get current window list directly (trust persistent storage)
-    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
-    
-    if [[ -z "$current_list" ]]; then
-        echo "No windows found on current monitor to cycle"
-        return 1
-    fi
-    
-    local list_array=($current_list)
-    local count=${#list_array[@]}
-    
-    if [[ $count -lt 2 ]]; then
+    IFS=':' read -r mon_name _ <<< "$(get_current_monitor)"
+
+    # 1) Get windows in spatial order (left->right, then top->bottom)
+    mapfile -t WIDS < <(
+        wmctrl -lG 2>/dev/null | awk -v ws="$ws" '$2==ws {print $1, $3, $4}' |
+        while read -r id x y; do
+            [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon_name" ]] && echo "$id $x $y"
+        done | sort -k2,2n -k3,3n | awk '{print $1}'
+    )
+    local n="${#WIDS[@]}"
+    if (( n < 2 )); then 
         echo "Need at least 2 windows on current monitor to cycle"
-        return 1
+        return 0
     fi
-    
-    echo "Cycling master order of $count windows clockwise on current monitor..."
-    
-    # Build new cycled list: last element moves to first position
-    local new_list="${list_array[-1]}"
-    for ((j=0; j<count-1; j++)); do
-        new_list="$new_list ${list_array[j]}"
+
+    # 2) Capture geometries in the same order
+    local GEOMS=()
+    for id in "${WIDS[@]}"; do
+        GEOMS+=("$(get_window_geometry "$id")")
     done
-    
-    # Update the persistent window list
-    set_window_list "$current_workspace" "$monitor_name" "$new_list"
-    
-    # Add hold to prevent monitor from immediately reconciling the change
-    hold_now "$current_workspace" "$monitor_name" 900
-    # Add cooldown to prevent monitor from immediately re-detecting and flickering
-    cooldown_now 600
-    # Directly reapply the saved layout for this monitor
-    reapply_saved_layout_for_monitor "$current_workspace" "$current_monitor"
-    
-    echo "Window master order cycled clockwise - layout reapplied"
+
+    # 3) Rotate geometries right by 1 (C A B style: last window moves to first position)
+    local last="${GEOMS[-1]}"
+    unset 'GEOMS[-1]'
+    GEOMS=("$last" "${GEOMS[@]}")
+
+    # 4) Apply geometries back to the same windows
+    for i in "${!WIDS[@]}"; do
+        IFS=':' read -r gx gy gw gh <<< "${GEOMS[$i]}"
+        place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
+    done
+
+    echo "Cycled by swapping geometries across ${#WIDS[@]} window(s) clockwise"
 }
 
 # Reverse cycle window positions (counter-clockwise, current monitor only)
 reverse_cycle_window_positions() {
-    # Get current workspace and monitor info
-    local current_workspace=$(get_current_workspace)
+    local ws mon_name
+    ws="$(get_current_workspace)"
     get_screen_info
-    local current_monitor=$(get_current_monitor)
-    local monitor_name=$(echo "$current_monitor" | cut -d':' -f1)
-    
-    # Get current window list directly (trust persistent storage)
-    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
-    
-    if [[ -z "$current_list" ]]; then
-        echo "No windows found on current monitor to cycle"
-        return 1
-    fi
-    
-    local list_array=($current_list)
-    local count=${#list_array[@]}
-    
-    if [[ $count -lt 2 ]]; then
+    IFS=':' read -r mon_name _ <<< "$(get_current_monitor)"
+
+    # 1) Get windows in spatial order (left->right, then top->bottom)
+    mapfile -t WIDS < <(
+        wmctrl -lG 2>/dev/null | awk -v ws="$ws" '$2==ws {print $1, $3, $4}' |
+        while read -r id x y; do
+            [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon_name" ]] && echo "$id $x $y"
+        done | sort -k2,2n -k3,3n | awk '{print $1}'
+    )
+    local n="${#WIDS[@]}"
+    if (( n < 2 )); then 
         echo "Need at least 2 windows on current monitor to cycle"
-        return 1
+        return 0
     fi
-    
-    echo "Cycling master order of $count windows counter-clockwise on current monitor..."
-    
-    # Build new reverse-cycled list: first element moves to last position
-    local new_list=""
-    for ((j=1; j<count; j++)); do
-        new_list="$new_list ${list_array[j]}"
+
+    # 2) Capture geometries in the same order
+    local GEOMS=()
+    for id in "${WIDS[@]}"; do
+        GEOMS+=("$(get_window_geometry "$id")")
     done
-    new_list="$new_list ${list_array[0]}"
-    new_list=$(echo "$new_list" | xargs)  # Trim whitespace
-    
-    # Update the persistent window list
-    set_window_list "$current_workspace" "$monitor_name" "$new_list"
-    
-    # Add hold to prevent monitor from immediately reconciling the change
-    hold_now "$current_workspace" "$monitor_name" 900
-    # Add cooldown to prevent monitor from immediately re-detecting and flickering
-    cooldown_now 600
-    # Directly reapply the saved layout for this monitor
-    reapply_saved_layout_for_monitor "$current_workspace" "$current_monitor"
-    
-    echo "Window master order cycled counter-clockwise - layout reapplied"
+
+    # 3) Rotate geometries left by 1 (A B C style: first window moves to last position)
+    local first="${GEOMS[0]}"
+    GEOMS=("${GEOMS[@]:1}" "$first")
+
+    # 4) Apply geometries back to the same windows
+    for i in "${!WIDS[@]}"; do
+        IFS=':' read -r gx gy gw gh <<< "${GEOMS[$i]}"
+        place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
+    done
+
+    echo "Cycled by swapping geometries across ${#WIDS[@]} window(s) counter-clockwise"
 }
 
 #========================================
