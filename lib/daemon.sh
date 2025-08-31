@@ -27,28 +27,17 @@ source "$DAEMON_DIR/monitors.sh"
 source "$DAEMON_DIR/windows.sh"
 source "$DAEMON_DIR/layouts.sh"
 
-# --- Global SSOT + no-op lock + cooldown (available to all functions) ---
-# Single Source Of Truth for window order, in-memory only
-declare -Ag WINDOW_LISTS WINDOW_DIRTY WINDOW_GEN 2>/dev/null || true
+# --- Daemon-specific state tracking (SSOT is in windows.sh) ---
+# Dirty and generation tracking for daemon's reconciliation logic
+declare -Ag WINDOW_DIRTY WINDOW_GEN 2>/dev/null || true
 
 # Locks are no-ops in single-process mode; harmless if you later add flock
 state_lock()   { :; }
 state_unlock() { :; }
 
-# Key helper for the per-(workspace|monitor) maps
-__key(){ printf "%s|%s" "$1" "$2"; }
-
-# SSOT accessors (used by many call sites you already have)
-get_window_list() {             # args: workspace monitor_name
-  local ws="$1" mon="$2" k; k="$(__key "$ws" "$mon")"
-  echo "${WINDOW_LISTS["$k"]-}"
-}
-
-set_window_list() {             # args: workspace monitor_name "wid wid ..."
-  local ws="$1" mon="$2" list="$3" k; k="$(__key "$ws" "$mon")"
-  WINDOW_LISTS["$k"]="$list"
-  WINDOW_DIRTY["$k"]=1
-  WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
+# Key helper matching windows.sh format for daemon maps
+key_wsmon() {  # args: workspace monitor_name
+  printf "workspace_%s_monitor_%s" "$1" "$2"
 }
 
 # Cooldown helpers (monitor uses these even before watch loop starts)
@@ -479,57 +468,70 @@ show_daemon_status() {
 
 # SSOT functions now defined at top of file in global scope
 
-detect_current_ids_for_ws_mon() {  # args: workspace monitor_name -> echo ids
-    # You already have detection helpers that can return IDs per monitor for the current workspace.
-    # Reuse your code path that enumerates "windows_on_monitor" for a given monitor.
-    local ws="$1" mon="$2"
-    # Implementation hook: call your function that lists visible windows for that monitor.
-    # Fallback to wmctrl if needed; here we leverage your existing iterator inside apply_* that already builds the list.
-    list_windows_on_monitor_for_workspace "$ws" "$mon"
-}
+# detect_current_ids_for_ws_mon removed - using list_windows_on_monitor_for_workspace directly
 
 # Merge live detection with stored order, preserving relative order and appending new ids
 reconcile_ws_mon() {  # args: workspace monitor_name
     local ws="$1" mon="$2" live stored id
-    live="$(detect_current_ids_for_ws_mon "$ws" "$mon")"
+    live="$(list_windows_on_monitor_for_workspace "$ws" "$mon")"
 
-    local k; k="$(__key "$ws" "$mon")"
-    state_lock
-      stored="${WINDOW_LISTS["$k"]-}"
+    local k; k="$(key_wsmon "$ws" "$mon")"
+    stored="$(get_window_list "$ws" "$mon")"
+    
+    # If no stored order yet, initialize with live detection
+    if [[ -z "$stored" ]]; then
+        if [[ -n "$live" ]]; then
+            set_window_list "$ws" "$mon" "$live"
+            WINDOW_DIRTY["$k"]=1
+            WINDOW_GEN["$k"]=1
+        fi
+        return
+    fi
 
-      declare -A IN_STO=() IN_LIVE=()
-      for id in $stored; do IN_STO["$id"]=1; done
-      for id in $live;   do IN_LIVE["$id"]=1; done
+    # Build set of live windows for membership check
+    declare -A LIVE_SET=()
+    for id in $live; do LIVE_SET["$id"]=1; done
 
-      # keep existing ids in stored order
-      local kept=()
-      for id in $stored; do [[ ${IN_LIVE[$id]+x} ]] && kept+=("$id"); done
+    # Start with stored order, keeping only windows that still exist
+    local updated=""
+    local removed=0
+    for id in $stored; do
+        if [[ ${LIVE_SET[$id]+x} ]]; then
+            updated="${updated:+$updated }$id"
+            unset LIVE_SET["$id"]  # Mark as processed
+        else
+            removed=1
+        fi
+    done
 
-      # append new ids in live order
-      local added=()
-      for id in $live; do [[ ${IN_STO[$id]+x} ]] || added+=("$id"); done
+    # Append any new windows that weren't in stored
+    local added=0
+    for id in $live; do
+        if [[ ${LIVE_SET[$id]+x} ]]; then  # Still in set = new window
+            updated="${updated:+$updated }$id"
+            added=1
+        fi
+    done
 
-      local merged="${kept[*]}"; [[ ${#added[@]} -gt 0 ]] && merged="${merged:+$merged }${added[*]}"
-
-      if [[ "$merged" != "$stored" ]]; then
-        WINDOW_LISTS["$k"]="$merged"
+    # Only update SSOT if membership actually changed
+    if [[ $removed -eq 1 || $added -eq 1 ]]; then
+        set_window_list "$ws" "$mon" "$updated"
         WINDOW_DIRTY["$k"]=1
         WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
-      fi
-    state_unlock
+    fi
 }
 
 monitor_tick() {
     # Iterate just the current workspace; your layouts also operate per monitor.
-    local ws mon recs
+    local ws mon k
     ws="$(get_current_workspace)"
-    get_screen_info  # refresh monitors; you already call this elsewhere
-    for mon in $MONITORS; do
+    get_screen_info  # refresh monitors
+    for mon in "${MONITORS[@]}"; do
         IFS=':' read -r monitor_name mx my mw mh <<< "$mon"
 
         reconcile_ws_mon "$ws" "$monitor_name"
 
-        local k; k="$(__key "$ws" "$monitor_name")"
+        k="$(key_wsmon "$ws" "$monitor_name")"
         local dirty="${WINDOW_DIRTY["$k"]-0}"
         if ( is_auto_layout_enabled || [[ "$dirty" -eq 1 ]] ) && monitor_should_apply; then
             # Reapply using stored order only

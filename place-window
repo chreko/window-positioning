@@ -259,11 +259,21 @@ case "${1:-}" in
                 fi
                 echo "Starting window-positioning daemon..."
                 nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
-                sleep 1
-                if is_daemon_running; then
-                    echo "✓ Daemon started successfully (PID: $(get_daemon_pid))"
-                else
-                    echo "✗ Failed to start daemon"
+                
+                # Wait for daemon to fully initialize with retry mechanism
+                max_attempts=10
+                attempt=1
+                while [[ $attempt -le $max_attempts ]]; do
+                    sleep 0.5
+                    if is_daemon_running; then
+                        echo "✓ Daemon started successfully (PID: $(get_daemon_pid))"
+                        break
+                    fi
+                    ((attempt++))
+                done
+                
+                if [[ $attempt -gt $max_attempts ]]; then
+                    echo "✗ Failed to start daemon after $max_attempts attempts"
                     echo "Check: tail ~/.config/window-positioning/daemon.log"
                     exit 1
                 fi
