@@ -13,6 +13,19 @@ if ! declare -p WINDOW_LISTS &>/dev/null; then
     declare -gA WINDOW_LISTS=()
 fi
 
+# In-memory guard for one-time initialization per process
+declare -g __WINDOW_POSITIONING_INITIALIZED=""
+
+# Ensure initialization happens only once per process execution
+ensure_initialized_once() {
+    # Fast in-memory check - avoids all expensive operations on subsequent calls
+    [[ "$__WINDOW_POSITIONING_INITIALIZED" == "1" ]] && return 0
+    
+    # Run initialization once per process
+    initialize_all_workspace_lists
+    __WINDOW_POSITIONING_INITIALIZED="1"
+}
+
 # Initialize window list for a workspace/monitor if it doesn't exist
 init_window_list() {
     local workspace="$1"
