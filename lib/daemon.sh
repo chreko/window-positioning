@@ -244,11 +244,20 @@ handle_daemon_command() {
             response=$(auto_layout_all_monitors 2>&1)
             ;;
         master*)
-            # Parse master command: "master vertical 60" or "master horizontal"
+            # Parse master command: "master vertical 60", "master center 50", "master vertical --all 60"
             read -ra cmd_parts <<< "$command"
             local orientation="${cmd_parts[1]}"
-            local percentage="${cmd_parts[2]:-60}"
-            response=$(master_stack_layout_current_monitor "$orientation" "$percentage" 2>&1)
+            
+            if [[ "$orientation" == "center" ]]; then
+                local percentage="${cmd_parts[2]:-50}"
+                response=$(center_master_layout_current_monitor "$percentage" 2>&1)
+            elif [[ "${cmd_parts[2]}" == "--all" ]]; then
+                local percentage="${cmd_parts[3]:-60}"
+                response=$(master_stack_layout "$orientation" "$percentage" 2>&1)
+            else
+                local percentage="${cmd_parts[2]:-60}"
+                response=$(master_stack_layout_current_monitor "$orientation" "$percentage" 2>&1)
+            fi
             ;;
         cycle*)
             if [[ "$command" == *"counter-clockwise"* ]]; then
