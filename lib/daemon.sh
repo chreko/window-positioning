@@ -86,6 +86,15 @@ place_window_geometry() {
     wmctrl -i -r "$wid" -e "0,$x,$y,$w,$h" 2>/dev/null
 }
 
+order_windows_spatial_on_monitor() {  # ws mon_name -> echo IDs in L→R then T→B
+    local ws="$1" mon="$2"
+    # Use wmctrl -lG once; filter to workspace; keep only this monitor; sort by (x,y)
+    wmctrl -lG 2>/dev/null | awk -v ws="$ws" '$2==ws {print $1, $3, $4}' |
+    while read -r id x y; do
+        [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon" ]] && echo "$id $x $y"
+    done | sort -k2,2n -k3,3n | awk '{print $1}'
+}
+
 # Window detection function that respects SSOT first, then falls back to spatial order for bootstrap
 list_windows_on_monitor_for_workspace() {  # ws mon_name -> echo "winids..."
     local ws="$1" mon="$2"
@@ -1012,73 +1021,63 @@ swap_window_positions() {
 
 # Cycle window positions clockwise (current monitor only) - stateless geometry swap
 cycle_window_positions() {
+    # Stateless cycle: snapshot geometries → rotate → apply back
     local ws mon_name
     ws="$(get_current_workspace)"
-    get_screen_info
     IFS=':' read -r mon_name _ <<< "$(get_current_monitor)"
 
-    # 1) Get windows in spatial order (left->right, then top->bottom)
-    mapfile -t WIDS < <(
-        wmctrl -lG 2>/dev/null | awk -v ws="$ws" '$2==ws {print $1, $3, $4}' |
-        while read -r id x y; do
-            [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon_name" ]] && echo "$id $x $y"
-        done | sort -k2,2n -k3,3n | awk '{print $1}'
-    )
+    # 1) Determine ordering (spatial feels natural)
+    mapfile -t WIDS < <(order_windows_spatial_on_monitor "$ws" "$mon_name")
     local n="${#WIDS[@]}"; (( n < 2 )) && { echo "Nothing to cycle"; return 0; }
 
-    # 2) Capture geometries in the same order
+    # 2) Snapshot geometries
     local GEOMS=()
     for id in "${WIDS[@]}"; do
-        GEOMS+=("$(get_window_geometry "$id")")
+        GEOMS+=("$(get_window_geometry "$id")")  # "x:y:w:h"
     done
 
-    # 3) Rotate geometries right by 1 (C A B style: last window moves to first position)
-    local last="${GEOMS[-1]}"
-    unset 'GEOMS[-1]'
-    GEOMS=("$last" "${GEOMS[@]}")
+    # 3) Rotate geometries right by one (C A B)
+    local last="${GEOMS[-1]}"; unset 'GEOMS[-1]'; GEOMS=("$last" "${GEOMS[@]}")
 
-    # 4) Apply geometries back to the same windows
+    # 4) Apply back
     for i in "${!WIDS[@]}"; do
         IFS=':' read -r gx gy gw gh <<< "${GEOMS[$i]}"
         place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
     done
 
-    echo "Cycled ${#WIDS[@]} window(s) on monitor $mon_name"
+    # Prevent the monitor loop from immediately relayouting
+    hold_now "$ws" "$mon_name" 900
+    cooldown_now 600
+
+    echo "Cycled ${#WIDS[@]} window(s) by swapping geometries."
 }
 
 # Reverse cycle window positions (counter-clockwise, current monitor only)
 reverse_cycle_window_positions() {
+    # Stateless reverse: rotate geometries left by one (A B C → B C A)
     local ws mon_name
     ws="$(get_current_workspace)"
-    get_screen_info
     IFS=':' read -r mon_name _ <<< "$(get_current_monitor)"
 
-    # 1) Get windows in spatial order (left->right, then top->bottom)
-    mapfile -t WIDS < <(
-        wmctrl -lG 2>/dev/null | awk -v ws="$ws" '$2==ws {print $1, $3, $4}' |
-        while read -r id x y; do
-            [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon_name" ]] && echo "$id $x $y"
-        done | sort -k2,2n -k3,3n | awk '{print $1}'
-    )
+    mapfile -t WIDS < <(order_windows_spatial_on_monitor "$ws" "$mon_name")
     local n="${#WIDS[@]}"; (( n < 2 )) && { echo "Nothing to cycle"; return 0; }
 
-    # 2) Capture geometries in the same order
     local GEOMS=()
     for id in "${WIDS[@]}"; do
         GEOMS+=("$(get_window_geometry "$id")")
     done
 
-    # 3) Rotate geometries left by 1 (A B C style: first window moves to last position)
-    local first="${GEOMS[0]}"
-    GEOMS=("${GEOMS[@]:1}" "$first")
+    # rotate left by one
+    local first="${GEOMS[0]}"; GEOMS=("${GEOMS[@]:1}" "$first")
 
-    # 4) Apply geometries back to the same windows
     for i in "${!WIDS[@]}"; do
         IFS=':' read -r gx gy gw gh <<< "${GEOMS[$i]}"
         place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
     done
 
-    echo "Reverse cycled ${#WIDS[@]} window(s) on monitor $mon_name"
+    hold_now "$ws" "$mon_name" 900
+    cooldown_now 600
+    echo "Reverse-cycled ${#WIDS[@]} window(s) by swapping geometries."
 }
 
 #========================================
