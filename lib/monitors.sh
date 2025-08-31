@@ -79,7 +79,7 @@ get_primary_monitor() {
 get_window_monitor() {
     local window_id="$1"
     local geom=$(get_window_geometry "$window_id")
-    IFS=',' read -r wx wy ww wh <<< "$geom"
+    IFS=':' read -r wx wy ww wh <<< "$geom"
     
     local best_monitor=""
     local best_overlap=0
