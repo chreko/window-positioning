@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+echo "=== SCRIPT STARTING ==="
+
+# Global associative array will be declared in windows.sh
+
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -25,6 +29,9 @@ source "$SCRIPT_DIR/lib/advanced.sh"
 # Initialize configuration
 init_config
 load_config
+
+# Initialize window lists for all workspaces and monitors
+initialize_all_workspace_lists
 
 # Check if running in daemon mode (prevent interactive prompts)
 DAEMON_MODE=${DAEMON_MODE:-false}
@@ -71,6 +78,14 @@ case "${1:-}" in
         # List saved presets
         echo "Available presets:"
         grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
+        ;;
+    test-init)
+        # Test initialization functionality
+        test_initialization
+        ;;
+    debug-lists)
+        # Show all stored window lists
+        debug_window_lists
         ;;
     monitors)
         # Show monitor information
@@ -189,22 +204,23 @@ case "${1:-}" in
         minimize_others
         ;;
     swap)
-        # Window swapping
+        # Window swapping (2 selected windows)
+        swap_window_positions
+        ;;
+    cycle)
+        # Window cycling (all windows on current monitor)
         case "${2:-}" in
-            interactive)
-                swap_window_positions
-                ;;
-            clockwise)
-                cycle_window_positions
-                ;;
             counter-clockwise)
                 reverse_cycle_window_positions
                 ;;
+            clockwise|"")
+                cycle_window_positions
+                ;;
             *)
-                echo "Window swap commands:"
-                echo "  place-window swap interactive      Swap positions of two selected windows"
-                echo "  place-window swap clockwise        Cycle all window positions clockwise"
-                echo "  place-window swap counter-clockwise Cycle all window positions counter-clockwise"
+                echo "Window cycle commands:"
+                echo "  place-window cycle                   Cycle all window positions clockwise (default)"
+                echo "  place-window cycle clockwise         Cycle all window positions clockwise"
+                echo "  place-window cycle counter-clockwise Cycle all window positions counter-clockwise"
                 ;;
         esac
         ;;
@@ -443,8 +459,9 @@ Watch mode (automatic tiling daemon):
 
 Advanced operations:
   place-window resize expand-right 50   Simultaneous resize with adjacent windows
-  place-window swap interactive         Swap positions of two windows  
-  place-window swap clockwise           Rotate all window positions
+  place-window swap                     Swap positions of two selected windows
+  place-window cycle                    Rotate all window positions clockwise (default)
+  place-window cycle counter-clockwise  Rotate all window positions counter-clockwise
   place-window minimize-others          Minimize all except active window
 
 Position management:

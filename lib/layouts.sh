@@ -389,17 +389,80 @@ auto_layout_and_reset_monitor() {
     local workspace=$(get_current_workspace) 
     clear_workspace_monitor_layout "$workspace" "$monitor_name"
     
-    # Get windows for this monitor
+    # Get windows for this monitor (workspace-aware for persistent ordering)
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_creation "$monitor")
+    done < <(get_visible_windows_on_monitor_by_creation "$monitor" "$workspace")
     
     # Apply fresh auto-layout
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
     
     # Trigger daemon to immediately apply after clearing preferences
     trigger_daemon_reapply >/dev/null 2>&1
+}
+
+# Reapply saved layout for a specific workspace/monitor
+reapply_saved_layout_for_monitor() {
+    local workspace="$1"
+    local monitor="$2"  # Full monitor string
+    
+    IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
+    
+    # Get window list directly from persistent storage and validate
+    local master_windows=()
+    local window_list=$(get_window_list "$workspace" "$monitor_name")
+    if [[ -n "$window_list" ]]; then
+        local all_windows=()
+        read -ra all_windows <<< "$window_list"
+        
+        # Filter out dead windows
+        for window_id in "${all_windows[@]}"; do
+            if [[ -n "$window_id" ]] && xdotool getwindowgeometry "$window_id" >/dev/null 2>&1; then
+                local window_desktop=$(wmctrl -l 2>/dev/null | grep "^$window_id " | awk '{print $2}')
+                if [[ "$window_desktop" == "$workspace" || "$window_desktop" == "-1" ]]; then
+                    master_windows+=("$window_id")
+                fi
+            fi
+        done
+        
+        # Update the persistent list if we removed dead windows
+        if [[ ${#master_windows[@]} -ne ${#all_windows[@]} ]]; then
+            set_window_list "$workspace" "$monitor_name" "${master_windows[*]}"
+            echo "Cleaned up $(( ${#all_windows[@]} - ${#master_windows[@]} )) dead window(s) from persistent list"
+        fi
+    fi
+    
+    if [[ ${#master_windows[@]} -gt 0 ]]; then
+        # Check for saved layout preference (window count independent)
+        local num_windows=${#master_windows[@]}
+        local monitor_layout
+        monitor_layout=$(get_workspace_monitor_layout "$workspace" "$monitor_name" "" "")
+        
+        if [[ -n "$monitor_layout" ]]; then
+            echo "Reapplying saved layout '$monitor_layout' to monitor $monitor_name ($num_windows windows)"
+            
+            # Reapply the saved layout using master window order
+            if [[ "$monitor_layout" == "auto" ]]; then
+                auto_layout_single_monitor "$monitor" "${master_windows[@]}"
+            elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
+                local master_params="${BASH_REMATCH[1]}"
+                read -r orientation percentage <<< "$master_params"
+                
+                if [[ "$orientation" == "center" ]]; then
+                    apply_meta_center_sidebar_single_monitor "$monitor" "${percentage:-50}" "${master_windows[@]}"
+                elif [[ "$orientation" == "vertical" ]]; then
+                    apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
+                else
+                    apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
+                fi
+            fi
+        else
+            # No saved layout preference - default to auto-layout
+            echo "No saved preference - applying default auto-layout to monitor $monitor_name ($num_windows windows)"
+            auto_layout_single_monitor "$monitor" "${master_windows[@]}"
+        fi
+    fi
 }
 
 # Auto-layout current monitor only
@@ -420,11 +483,12 @@ auto_layout_all_monitors() {
     for monitor in "${MONITORS[@]}"; do
         IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
         
-        # Get windows for this monitor
+        # Get windows from persistent list (respects swap/cycle order)
+        local current_list=$(get_window_list "$workspace" "$monitor_name")
         local windows_on_monitor=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && windows_on_monitor+=("$line")
-        done < <(get_visible_windows_on_monitor_by_creation "$monitor")
+        if [[ -n "$current_list" ]]; then
+            read -ra windows_on_monitor <<< "$current_list"
+        fi
         
         # Apply layout to this monitor
         if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then

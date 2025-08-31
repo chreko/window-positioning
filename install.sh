@@ -19,6 +19,12 @@ echo "Config will be created at: $CONFIG_DIR"
 echo "Libraries will be installed to: $INSTALL_LIB_DIR"
 echo ""
 
+# Clean up any existing temporary files to ensure fresh installation
+echo "Cleaning up temporary files..."
+rm -f /tmp/place-window-wrapper
+rm -f /tmp/place-window*
+echo "✓ Temporary files cleaned"
+
 # Check if running in dom0
 if [[ ! -f /proc/xen/capabilities ]] || ! grep -q "control_d" /proc/xen/capabilities 2>/dev/null; then
     echo "Warning: This doesn't appear to be dom0. This tool is designed for dom0 only."
@@ -88,6 +94,9 @@ source "$INSTALL_LIB_DIR/advanced.sh"
 # Initialize configuration
 init_config
 load_config
+
+# Initialize window lists for all workspaces and monitors
+initialize_all_workspace_lists
 
 # Check if running in daemon mode (prevent interactive prompts)
 DAEMON_MODE=${DAEMON_MODE:-false}

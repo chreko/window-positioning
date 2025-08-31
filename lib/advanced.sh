@@ -114,12 +114,15 @@ master_stack_layout_current_monitor() {
     
     get_screen_info
     local current_monitor=$(get_current_monitor)
+    local current_workspace=$(get_current_workspace)
     
-    # Get windows on the current monitor only
+    # Get windows from the persistent window list (respects swap/cycle order)
+    IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
+    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
     local windows_on_monitor=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_creation "$current_monitor")
+    if [[ -n "$current_list" ]]; then
+        read -ra windows_on_monitor <<< "$current_list"
+    fi
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -149,50 +152,63 @@ master_stack_layout_current_monitor() {
     trigger_daemon_reapply >/dev/null 2>&1
 }
 
-# Master-stack layouts for all monitors
+# Master-stack layouts for all monitors (reuses single-monitor function)
 master_stack_layout() {
     local orientation="$1"  # vertical or horizontal
     local percentage="${2:-60}"  # master window percentage (default 60%)
-    local windows=($(get_visible_windows_by_creation))
-    local count=${#windows[@]}
     
-    if [[ $count -lt 2 ]]; then
-        echo "Master-stack requires at least 2 windows"
-        return 1
-    fi
-    
-    # Group windows by monitor and apply master-stack layout to each monitor
+    # Get current workspace and monitor info
+    local current_workspace=$(get_current_workspace)
     get_screen_info
-    local monitors_with_windows=()
+    local current_monitor=$(get_current_monitor)
     
-    # Group windows by monitor
+    local monitors_applied=0
+    local total_windows=0
+    
+    echo "Applying master-stack ($orientation, ${percentage}%) to all monitors on workspace $((current_workspace + 1))"
+    
+    # Apply master-stack layout to each monitor by temporarily switching context
     for monitor in "${MONITORS[@]}"; do
+        # Get windows from persistent list for this monitor
+        IFS=':' read -r name mx my mw mh <<< "$monitor"
+        local current_list=$(get_window_list "$current_workspace" "$name")
         local windows_on_monitor=()
-        for window_id in "${windows[@]}"; do
-            local window_monitor=$(get_window_monitor "$window_id")
-            if [[ "$window_monitor" == "$monitor" ]]; then
-                windows_on_monitor+=("$window_id")
-            fi
-        done
+        if [[ -n "$current_list" ]]; then
+            read -ra windows_on_monitor <<< "$current_list"
+        fi
         
-        if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
-            monitors_with_windows+=("$monitor")
-            local num_windows=${#windows_on_monitor[@]}
-            
+        local num_windows=${#windows_on_monitor[@]}
+        total_windows=$((total_windows + num_windows))
+        
+        if [[ $num_windows -gt 0 ]]; then
             IFS=':' read -r name mx my mw mh <<< "$monitor"
-            echo "Monitor $name: Applying master-stack ($orientation, ${percentage}%) to $num_windows window(s)"
+            echo "Monitor $name: $num_windows window(s)"
             
-            if [[ "$orientation" == "vertical" ]]; then
-                # Master on left, stack on right - use main-sidebar atomic function
-                apply_meta_main_sidebar_single_monitor "$monitor" "$percentage" "${windows_on_monitor[@]}"
-            else
-                # Master on top, stack on bottom - use topbar-main atomic function  
-                apply_meta_topbar_main_single_monitor "$monitor" "$percentage" "${windows_on_monitor[@]}"
-            fi
+            # Temporarily override current monitor context for the single-monitor function
+            local original_monitor="$current_monitor"
+            
+            # Mock get_current_monitor to return this specific monitor
+            get_current_monitor() { echo "$monitor"; }
+            
+            # Apply master-stack layout to this monitor using the single-monitor function
+            master_stack_layout_current_monitor "$orientation" "$percentage"
+            
+            # Restore original get_current_monitor function
+            unset -f get_current_monitor
+            
+            monitors_applied=$((monitors_applied + 1))
+        else
+            IFS=':' read -r name mx my mw mh <<< "$monitor"
+            echo "Monitor $name: No windows to arrange"
         fi
     done
     
-    echo "Master-stack layout ($orientation) applied to ${#monitors_with_windows[@]} monitor(s)"
+    if [[ $total_windows -lt 2 ]]; then
+        echo "Master-stack requires at least 2 windows across all monitors (found $total_windows)"
+        return 1
+    fi
+    
+    echo "Master-stack layout ($orientation) applied to $monitors_applied monitor(s) with $total_windows total windows"
 }
 
 # Center master layout for current monitor only
@@ -201,11 +217,15 @@ center_master_layout_current_monitor() {
     
     get_screen_info
     local current_monitor=$(get_current_monitor)
+    local current_workspace=$(get_current_workspace)
     
+    # Get windows from the persistent window list (respects swap/cycle order)
+    IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
+    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
     local windows_on_monitor=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_creation "$current_monitor")
+    if [[ -n "$current_list" ]]; then
+        read -ra windows_on_monitor <<< "$current_list"
+    fi
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -282,11 +302,12 @@ minimize_others() {
             local current_workspace=$(get_current_workspace)
             local monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" 1 "")
             
-            # Get windows on current monitor after minimization
+            # Get windows from persistent list after minimization
+            local current_list=$(get_window_list "$current_workspace" "$monitor_name")
             local windows_on_monitor=()
-            while IFS= read -r line; do
-                [[ -n "$line" ]] && windows_on_monitor+=("$line")
-            done < <(get_visible_windows_on_monitor_by_creation "$current_monitor")
+            if [[ -n "$current_list" ]]; then
+                read -ra windows_on_monitor <<< "$current_list"
+            fi
             
             if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
                 if [[ -n "$monitor_layout" ]]; then
@@ -443,79 +464,136 @@ swap_window_positions() {
         return 1
     fi
     
-    local geom1=$(get_window_geometry "$window1")
-    local geom2=$(get_window_geometry "$window2")
+    # Get current workspace and monitor info
+    local current_workspace=$(get_current_workspace)
+    local monitor1=$(get_window_monitor "$window1")
+    local monitor2=$(get_window_monitor "$window2")
     
-    IFS=',' read -r x1 y1 w1 h1 <<< "$geom1"
-    IFS=',' read -r x2 y2 w2 h2 <<< "$geom2"
+    # Get workspace for each window to verify they're on current workspace
+    local window1_workspace=$(wmctrl -l 2>/dev/null | grep "^$window1 " | awk '{print $2}')
+    local window2_workspace=$(wmctrl -l 2>/dev/null | grep "^$window2 " | awk '{print $2}')
     
-    # Swap positions (keeping original sizes)
-    apply_geometry "$window1" "$x2" "$y2" "$w1" "$h1"
-    apply_geometry "$window2" "$x1" "$y1" "$w2" "$h2"
-    
-    # Note: The swap changes visual positions, so if in a master layout,
-    # the user should re-apply the master command to update master assignment
-    echo "Windows swapped successfully"
+    # Check if both windows are on the same monitor AND same workspace
+    if [[ "$monitor1" == "$monitor2" ]]; then
+        # Verify both windows are on current workspace (or sticky windows with -1)
+        if [[ ("$window1_workspace" == "$current_workspace" || "$window1_workspace" == "-1") && 
+              ("$window2_workspace" == "$current_workspace" || "$window2_workspace" == "-1") ]]; then
+            
+            local monitor_name=$(echo "$monitor1" | cut -d':' -f1)
+            
+            # Swap windows in the persistent window list only
+            local result=$(swap_windows_in_list "$current_workspace" "$monitor_name" "$window1" "$window2")
+            
+            if [[ -n "$result" ]]; then
+                read -r window1_pos window2_pos <<< "$result"
+                
+                # Directly reapply the saved layout for this monitor
+                reapply_saved_layout_for_monitor "$current_workspace" "$monitor1"
+                
+                # Inform user about the master order swap
+                if [[ $window1_pos -eq 0 ]]; then
+                    echo "Former master window (position 0) swapped with window at position $window2_pos"
+                elif [[ $window2_pos -eq 0 ]]; then
+                    echo "Window at position $window1_pos became the new master (position 0)"
+                else
+                    echo "Windows at positions $window1_pos and $window2_pos swapped in master order"
+                fi
+                
+                echo "Master order updated - layout reapplied"
+            else
+                echo "Warning: One or both windows not found in window list"
+            fi
+        else
+            echo "Cannot swap windows: both windows must be on the current workspace"
+            echo "Window 1 workspace: $window1_workspace, Window 2 workspace: $window2_workspace, Current: $current_workspace"
+        fi
+    else
+        echo "Cannot swap windows on different monitors"
+        echo "Window 1 monitor: $monitor1"
+        echo "Window 2 monitor: $monitor2"
+    fi
 }
 
-# Cycle window positions clockwise
+# Cycle window positions clockwise (current monitor only)
 cycle_window_positions() {
-    local windows=($(get_visible_windows_by_creation))
-    local count=${#windows[@]}
+    # Get current workspace and monitor info
+    local current_workspace=$(get_current_workspace)
+    get_screen_info
+    local current_monitor=$(get_current_monitor)
+    local monitor_name=$(echo "$current_monitor" | cut -d':' -f1)
     
-    if [[ $count -lt 2 ]]; then
-        echo "Need at least 2 windows to cycle"
+    # Get current window list directly (trust persistent storage)
+    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
+    
+    if [[ -z "$current_list" ]]; then
+        echo "No windows found on current monitor to cycle"
         return 1
     fi
     
-    echo "Cycling positions of $count windows clockwise..."
+    local list_array=($current_list)
+    local count=${#list_array[@]}
     
-    # Get all geometries
-    local geometries=()
-    for window_id in "${windows[@]}"; do
-        geometries+=("$(get_window_geometry "$window_id")")
+    if [[ $count -lt 2 ]]; then
+        echo "Need at least 2 windows on current monitor to cycle"
+        return 1
+    fi
+    
+    echo "Cycling master order of $count windows clockwise on current monitor..."
+    
+    # Build new cycled list: last element moves to first position
+    local new_list="${list_array[-1]}"
+    for ((j=0; j<count-1; j++)); do
+        new_list="$new_list ${list_array[j]}"
     done
     
-    # Apply each window the geometry of the previous window (cycling)
-    for ((i=0; i<count; i++)); do
-        local prev_index=$(( (i - 1 + count) % count ))
-        local geom="${geometries[prev_index]}"
-        IFS=',' read -r x y w h <<< "$geom"
-        apply_geometry "${windows[i]}" "$x" "$y" "$w" "$h"
-    done
+    # Update the persistent window list
+    set_window_list "$current_workspace" "$monitor_name" "$new_list"
     
-    # Note: Cycling changes which window is in the master position
-    # Re-apply master layout if you want to update master assignment
-    echo "Window positions cycled clockwise"
+    # Directly reapply the saved layout for this monitor
+    reapply_saved_layout_for_monitor "$current_workspace" "$current_monitor"
+    
+    echo "Window master order cycled clockwise - layout reapplied"
 }
 
-# Reverse cycle window positions (counter-clockwise)
+# Reverse cycle window positions (counter-clockwise, current monitor only)
 reverse_cycle_window_positions() {
-    local windows=($(get_visible_windows_by_creation))
-    local count=${#windows[@]}
+    # Get current workspace and monitor info
+    local current_workspace=$(get_current_workspace)
+    get_screen_info
+    local current_monitor=$(get_current_monitor)
+    local monitor_name=$(echo "$current_monitor" | cut -d':' -f1)
     
-    if [[ $count -lt 2 ]]; then
-        echo "Need at least 2 windows to cycle"
+    # Get current window list directly (trust persistent storage)
+    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
+    
+    if [[ -z "$current_list" ]]; then
+        echo "No windows found on current monitor to cycle"
         return 1
     fi
     
-    echo "Cycling positions of $count windows counter-clockwise..."
+    local list_array=($current_list)
+    local count=${#list_array[@]}
     
-    # Get all geometries
-    local geometries=()
-    for window_id in "${windows[@]}"; do
-        geometries+=("$(get_window_geometry "$window_id")")
+    if [[ $count -lt 2 ]]; then
+        echo "Need at least 2 windows on current monitor to cycle"
+        return 1
+    fi
+    
+    echo "Cycling master order of $count windows counter-clockwise on current monitor..."
+    
+    # Build new reverse-cycled list: first element moves to last position
+    local new_list=""
+    for ((j=1; j<count; j++)); do
+        new_list="$new_list ${list_array[j]}"
     done
+    new_list="$new_list ${list_array[0]}"
+    new_list=$(echo "$new_list" | xargs)  # Trim whitespace
     
-    # Apply each window the geometry of the next window (reverse cycling)
-    for ((i=0; i<count; i++)); do
-        local next_index=$(( (i + 1) % count ))
-        local geom="${geometries[next_index]}"
-        IFS=',' read -r x y w h <<< "$geom"
-        apply_geometry "${windows[i]}" "$x" "$y" "$w" "$h"
-    done
+    # Update the persistent window list
+    set_window_list "$current_workspace" "$monitor_name" "$new_list"
     
-    # Note: Cycling changes which window is in the master position
-    # Re-apply master layout if you want to update master assignment
-    echo "Window positions cycled counter-clockwise"
+    # Directly reapply the saved layout for this monitor
+    reapply_saved_layout_for_monitor "$current_workspace" "$current_monitor"
+    
+    echo "Window master order cycled counter-clockwise - layout reapplied"
 }

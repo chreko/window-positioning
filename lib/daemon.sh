@@ -75,44 +75,8 @@ watch_daemon_internal() {
         
         get_screen_info
         for monitor in "${MONITORS[@]}"; do
-            IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-            
-            # Get master window list (single source of truth)
-            local master_windows=()
-            while IFS= read -r line; do
-                [[ -n "$line" ]] && master_windows+=("$line")
-            done < <(get_or_create_master_window_list "$current_workspace" "$monitor")
-            
-            if [[ ${#master_windows[@]} -gt 0 ]]; then
-                # Check for saved layout preference (window count independent)
-                local num_windows=${#master_windows[@]}
-                local monitor_layout
-                monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" "" "")
-                
-                if [[ -n "$monitor_layout" ]]; then
-                    echo "$(date): Reapplying saved layout '$monitor_layout' to monitor $monitor_name ($num_windows windows)"
-                    
-                    # Reapply the saved layout using master window order
-                    if [[ "$monitor_layout" == "auto" ]]; then
-                        auto_layout_single_monitor "$monitor" "${master_windows[@]}"
-                    elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
-                        local master_params="${BASH_REMATCH[1]}"
-                        read -r orientation percentage <<< "$master_params"
-                        
-                        if [[ "$orientation" == "center" ]]; then
-                            apply_meta_center_sidebar_single_monitor "$monitor" "${percentage:-50}" "${master_windows[@]}"
-                        elif [[ "$orientation" == "vertical" ]]; then
-                            apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
-                        else
-                            apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
-                        fi
-                    fi
-                else
-                    # No saved layout preference - default to auto-layout
-                    echo "$(date): No saved preference - applying default auto-layout to monitor $monitor_name ($num_windows windows)"
-                    auto_layout_single_monitor "$monitor" "${master_windows[@]}"
-                fi
-            fi
+            # Use the shared function for each monitor
+            reapply_saved_layout_for_monitor "$current_workspace" "$monitor"
         done
     }
     
