@@ -328,40 +328,26 @@ case "${1:-}" in
                 fi
                 ;;
             toggle)
-                if is_daemon_running; then
-                    echo "Daemon is running - stopping..."
-                    pkill -f "place-window.*watch.*daemon"
-                    echo "✓ Daemon stopped"
-                else
-                    echo "Daemon is not running - starting..."
-                    nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
-                    sleep 1
-                    if is_daemon_running; then
-                        echo "✓ Daemon started successfully (PID: $(get_daemon_pid))"
-                    else
-                        echo "✗ Failed to start daemon"
-                        exit 1
-                    fi
-                fi
+                toggle_daemon
                 ;;
             daemon)
                 # Internal daemon mode - called by XDG autostart or manually
                 DAEMON_MODE=true
-                watch_daemon_internal
+                watch_daemon
                 ;;
             *)
                 echo "Watch mode commands (XDG autostart daemon):"
                 echo "  place-window watch start     Start the daemon"
                 echo "  place-window watch stop      Stop the daemon"
-                echo "  place-window watch toggle    Toggle daemon on/off"
+                echo "  place-window watch toggle    Toggle auto-layout on/off (daemon keeps running)"
                 echo "  place-window watch restart   Restart the daemon"
-                echo "  place-window watch status    Check daemon status"
+                echo "  place-window watch status    Check daemon status and auto-layout state"
                 echo "  place-window watch enable    Check auto-start status"
                 echo "  place-window watch disable   Remove auto-start"
                 echo "  place-window watch logs      View daemon logs"
                 echo ""
-                echo "The daemon monitors window events and automatically applies"
-                echo "tiling layouts when windows are created, minimized, or restored."
+                echo "The daemon provides IPC for window commands and optionally"
+                echo "monitors window events to automatically apply layouts."
                 echo ""
                 echo "Auto-start is configured via XDG autostart:"
                 echo "  ~/.config/autostart/window-positioning.desktop"

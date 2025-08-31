@@ -2,10 +2,207 @@
 
 # Watch daemon functionality for place-window
 
+# Set up IPC pipes for daemon communication
+setup_daemon_ipc() {
+    # Create pipe directory
+    mkdir -p "$DAEMON_PIPE_DIR"
+    
+    # Remove old pipes if they exist
+    rm -f "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
+    
+    # Create named pipes
+    mkfifo "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
+    
+    # Set permissions
+    chmod 600 "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
+    
+    echo "IPC pipes created: $DAEMON_CMD_PIPE, $DAEMON_RESP_PIPE"
+}
+
+# Clean up IPC pipes
+cleanup_daemon_ipc() {
+    rm -f "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
+    rmdir "$DAEMON_PIPE_DIR" 2>/dev/null || true
+    echo "IPC pipes cleaned up"
+}
+
+# Auto-layout state management
+AUTO_LAYOUT_ENABLED_FILE="${CONFIG_DIR}/auto-layout-enabled"
+
+# Check if auto-layout is enabled
+is_auto_layout_enabled() {
+    [[ -f "$AUTO_LAYOUT_ENABLED_FILE" ]]
+}
+
+# Enable auto-layout
+enable_auto_layout() {
+    touch "$AUTO_LAYOUT_ENABLED_FILE"
+    echo "$(date): Auto-layout enabled"
+}
+
+# Disable auto-layout
+disable_auto_layout() {
+    rm -f "$AUTO_LAYOUT_ENABLED_FILE"
+    echo "$(date): Auto-layout disabled"
+}
+
+# Toggle auto-layout state
+toggle_auto_layout() {
+    if is_auto_layout_enabled; then
+        disable_auto_layout
+        echo "Auto-layout disabled - daemon will run but not apply layouts automatically"
+    else
+        enable_auto_layout  
+        echo "Auto-layout enabled - daemon will automatically apply layouts on window changes"
+    fi
+}
+
+# Combined daemon that handles both window monitoring and IPC commands
+watch_daemon_with_ipc() {
+    # Initialize window lists for daemon context
+    ensure_initialized_once
+    
+    # Set up cleanup on exit
+    trap 'cleanup_daemon_ipc; echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
+    trap 'echo "$(date): Received reload signal - reapplying layouts"; apply_workspace_layout' SIGUSR1
+    
+    echo "$(date): Watch daemon with IPC started"
+    
+    # Initialize auto-layout as enabled by default
+    if [[ ! -f "$AUTO_LAYOUT_ENABLED_FILE" ]]; then
+        enable_auto_layout
+    fi
+    
+    # Start background window monitoring
+    watch_daemon_monitor &
+    local monitor_pid=$!
+    
+    # Handle IPC commands in foreground
+    daemon_command_loop
+    
+    # Clean up when done
+    kill "$monitor_pid" 2>/dev/null || true
+    cleanup_daemon_ipc
+}
+
+# Generate current master state for comparison (extracted from watch_daemon_internal)
+get_current_master_state() {
+    local current_workspace
+    current_workspace=$(get_current_workspace)
+    
+    # Add small delay to ensure workspace switch is complete
+    sleep 0.05
+    
+    get_screen_info
+    local combined_state="workspace:$current_workspace|"
+    
+    for monitor in "${MONITORS[@]}"; do
+        IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
+        
+        # Get window list for this monitor (current workspace only)
+        local master_list
+        master_list=$(get_window_list "$current_workspace" "$monitor_name")
+        
+        # Validate that all windows in the list are actually on current workspace
+        local validated_list=""
+        for window_id in $master_list; do
+            if [[ -n "$window_id" ]]; then
+                local window_desktop
+                window_desktop=$(wmctrl -l | grep "^$window_id " | awk '{print $2}')
+                if [[ "$window_desktop" == "$current_workspace" || "$window_desktop" == "-1" ]]; then
+                    validated_list="$validated_list $window_id"
+                fi
+            fi
+        done
+        master_list=$(echo "$validated_list" | xargs)
+        
+        # Also get window states to detect minimize/restore
+        local window_states=""
+        while IFS= read -r window_id; do
+            if [[ -n "$window_id" ]]; then
+                local state
+                state=$(xprop -id "$window_id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED" || echo "NORMAL")
+                window_states="${window_states}${window_id}:${state};"
+            fi
+        done <<< "$master_list"
+        
+        combined_state="${combined_state}${monitor_name}=[${master_list// /,}]:${window_states}|"
+    done
+    
+    echo "$combined_state"
+}
+
+# Apply layout when master state changes (extracted from watch_daemon_internal)
+apply_workspace_layout() {
+    local current_workspace
+    current_workspace=$(get_current_workspace)
+    
+    get_screen_info
+    for monitor in "${MONITORS[@]}"; do
+        # Use the shared function for each monitor
+        reapply_saved_layout_for_monitor "$current_workspace" "$monitor"
+    done
+}
+
+# Background window monitoring (simplified from watch_daemon_internal)
+watch_daemon_monitor() {
+    echo "$(date): Window monitoring started"
+    local last_master_state=""
+    
+    while true; do
+        local current_state
+        current_state=$(get_current_master_state)
+        
+        if [[ "$current_state" != "$last_master_state" ]]; then
+            echo "$(date): Window state changed"
+            
+            # Only apply layouts if auto-layout is enabled
+            if is_auto_layout_enabled; then
+                echo "$(date): Auto-layout enabled - applying layouts"
+                apply_workspace_layout
+            else
+                echo "$(date): Auto-layout disabled - skipping layout application"
+            fi
+            
+            last_master_state="$current_state"
+        fi
+        
+        sleep 0.5  # Check every 500ms
+    done
+}
+
+# IPC command loop - listens for commands on the pipe
+daemon_command_loop() {
+    echo "$(date): IPC command listener started"
+    
+    while true; do
+        # Read command from pipe (blocks until command received)
+        if read -r command < "$DAEMON_CMD_PIPE" 2>/dev/null; then
+            echo "$(date): Received command: $command"
+            
+            # Handle the command and get response
+            local response
+            response=$(handle_daemon_command "$command")
+            
+            # Send response back
+            echo "$response" > "$DAEMON_RESP_PIPE" 2>/dev/null || echo "Error: Failed to send response"
+        else
+            # Pipe was closed or error occurred
+            echo "$(date): Command pipe closed - daemon exiting"
+            break
+        fi
+    done
+}
+
 # Start the daemon directly without subprocess
 watch_daemon() {
     echo "Watch daemon started (PID: $$)"
-    watch_daemon_internal
+    
+    # Set up IPC pipes for command handling
+    setup_daemon_ipc
+    
+    # Start both window monitoring and command listening
+    watch_daemon_with_ipc
 }
 
 # Internal daemon implementation with intelligent polling and master window list
@@ -136,6 +333,13 @@ stop_daemon() {
     if is_daemon_running; then
         echo "Stopping watch mode daemon..."
         pkill -f "place-window.*watch.*daemon"
+        
+        # Give daemon time to clean up
+        sleep 1
+        
+        # Force cleanup pipes if daemon didn't do it
+        cleanup_daemon_ipc 2>/dev/null || true
+        
         echo "Watch mode stopped"
         return 0
     else
@@ -159,24 +363,28 @@ start_daemon_background() {
     return 0
 }
 
-# Toggle daemon on/off
+# Toggle auto-layout on/off (daemon keeps running)
 toggle_daemon() {
-    if is_daemon_running; then
-        # Watch mode is running, stop it
-        echo "Watch mode is running - stopping..."
-        stop_daemon
-    else
-        # Watch mode is not running, start it in background
-        start_daemon_background
+    if ! is_daemon_running; then
+        echo "Daemon is not running. Start with: place-window watch start"
+        return 1
     fi
+    
+    toggle_auto_layout
 }
 
 # Show daemon status
 show_daemon_status() {
     if is_daemon_running; then
         echo "Watch mode is running (PID: $(get_daemon_pid))"
+        if is_auto_layout_enabled; then
+            echo "Auto-layout: ENABLED (daemon will apply layouts automatically)"
+        else
+            echo "Auto-layout: DISABLED (daemon monitoring only, no automatic layouts)"
+        fi
     else
         echo "Watch mode is not running"
+        echo "Start with: place-window watch start"
     fi
 }
 
