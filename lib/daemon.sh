@@ -1,11 +1,116 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # Watch daemon functionality for place-window
+
+# Configuration defaults
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+: "${CONFIG_DIR:=$XDG_CONFIG_HOME/window-positioning}"
+: "${XDG_RUNTIME_DIR:=/tmp}"
+
+# Dependency checks
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required dependency: $1" >&2; exit 127; }; }
+need xdotool
+need wmctrl
+need xprop
+
+# Error handling function
+die() { echo "Error: $*" >&2; exit 1; }
+
+# Get the directory where daemon.sh is located
+DAEMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source required modules that daemon functions depend on
+source "$DAEMON_DIR/config.sh"
+source "$DAEMON_DIR/monitors.sh"
+source "$DAEMON_DIR/windows.sh"
+source "$DAEMON_DIR/layouts.sh"
+
+# --- Global SSOT + no-op lock + cooldown (available to all functions) ---
+# Single Source Of Truth for window order, in-memory only
+declare -Ag WINDOW_LISTS WINDOW_DIRTY WINDOW_GEN 2>/dev/null || true
+
+# Locks are no-ops in single-process mode; harmless if you later add flock
+state_lock()   { :; }
+state_unlock() { :; }
+
+# Key helper for the per-(workspace|monitor) maps
+__key(){ printf "%s|%s" "$1" "$2"; }
+
+# SSOT accessors (used by many call sites you already have)
+get_window_list() {             # args: workspace monitor_name
+  local ws="$1" mon="$2" k; k="$(__key "$ws" "$mon")"
+  echo "${WINDOW_LISTS["$k"]-}"
+}
+
+set_window_list() {             # args: workspace monitor_name "wid wid ..."
+  local ws="$1" mon="$2" list="$3" k; k="$(__key "$ws" "$mon")"
+  WINDOW_LISTS["$k"]="$list"
+  WINDOW_DIRTY["$k"]=1
+  WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
+}
+
+# Cooldown helpers (monitor uses these even before watch loop starts)
+: "${COOLDOWN_UNTIL_MS:=0}"
+cooldown_now() {                # args: [ms]
+  local ms="${1:-600}" now; now=$(date +%s%3N)
+  COOLDOWN_UNTIL_MS=$(( now + ms ))
+}
+monitor_should_apply() {
+  local now; now=$(date +%s%3N)
+  (( now >= COOLDOWN_UNTIL_MS ))
+}
+
+# Window detection function for SSOT system
+list_windows_on_monitor_for_workspace() {  # ws mon_name -> echo "winids..."
+    local ws="$1" mon="$2"
+
+    # Use existing workspace function, then filter by monitor
+    get_visible_windows_by_creation_for_workspace "$ws" | while read -r id; do
+        local window_monitor=$(get_window_monitor "$id")
+        if [[ "${window_monitor%%:*}" == "$mon" ]]; then
+            echo "$id"
+        fi
+    done
+}
+
+# Get windows sorted by creation order for specific workspace - stable for master layouts  
+get_visible_windows_by_creation_for_workspace() {
+    local target_workspace="$1"
+    
+    # wmctrl -l lists windows in creation order (oldest first)
+    wmctrl -l | while read -r line; do
+        local id=$(echo "$line" | awk '{print $1}')
+        local desktop=$(echo "$line" | awk '{print $2}')
+        
+        # Skip windows not on target workspace
+        [[ "$desktop" != "$target_workspace" && "$desktop" != "-1" ]] && continue
+        
+        # Check if window is minimized
+        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN")
+        [[ -n "$state" ]] && continue
+        
+        # Skip panels, docks, and desktop
+        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            continue
+        fi
+        
+        echo "$id"
+    done
+}
+
 
 # Set up IPC pipes for daemon communication
 setup_daemon_ipc() {
-    # Create pipe directory
+    # Set secure umask before creating directory
+    local old_umask=$(umask)
+    umask 077
+    
+    # Create pipe directory with secure permissions
     mkdir -p "$DAEMON_PIPE_DIR"
+    chmod 700 "$DAEMON_PIPE_DIR"
     
     # Remove old pipes if they exist
     rm -f "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
@@ -13,21 +118,29 @@ setup_daemon_ipc() {
     # Create named pipes
     mkfifo "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
     
-    # Set permissions
+    # Set permissions (redundant with umask but explicit)
     chmod 600 "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
+    
+    # Restore original umask
+    umask "$old_umask"
     
     echo "IPC pipes created: $DAEMON_CMD_PIPE, $DAEMON_RESP_PIPE"
 }
 
 # Clean up IPC pipes
 cleanup_daemon_ipc() {
-    rm -f "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE"
+    rm -f "$DAEMON_CMD_PIPE" "$DAEMON_RESP_PIPE" "$PID_FILE"
+    # Only remove directory if it's empty (other processes might use XDG_RUNTIME_DIR)
     rmdir "$DAEMON_PIPE_DIR" 2>/dev/null || true
-    echo "IPC pipes cleaned up"
+    echo "IPC pipes and PID file cleaned up"
 }
 
 # Auto-layout state management
 AUTO_LAYOUT_ENABLED_FILE="${CONFIG_DIR}/auto-layout-enabled"
+DAEMON_PIPE_DIR="${XDG_RUNTIME_DIR}/window-positioning"
+DAEMON_CMD_PIPE="$DAEMON_PIPE_DIR/commands"
+DAEMON_RESP_PIPE="$DAEMON_PIPE_DIR/responses"
+PID_FILE="$DAEMON_PIPE_DIR/daemon.pid"
 
 # Check if auto-layout is enabled
 is_auto_layout_enabled() {
@@ -36,7 +149,8 @@ is_auto_layout_enabled() {
 
 # Enable auto-layout
 enable_auto_layout() {
-    touch "$AUTO_LAYOUT_ENABLED_FILE"
+    mkdir -p "$CONFIG_DIR"
+    printf 'enabled %s\n' "$(date -Is)" > "$AUTO_LAYOUT_ENABLED_FILE"
     echo "$(date): Auto-layout enabled"
 }
 
@@ -59,30 +173,48 @@ toggle_auto_layout() {
 
 # Combined daemon that handles both window monitoring and IPC commands
 watch_daemon_with_ipc() {
-    # Initialize window lists for daemon context
-    ensure_initialized_once
-    
-    # Set up cleanup on exit
+    # Single-process daemon: command loop + monitor tick in one place
     trap 'cleanup_daemon_ipc; echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
-    trap 'echo "$(date): Received reload signal - reapplying layouts"; apply_workspace_layout' SIGUSR1
+    trap 'echo "$(date): SIGUSR1 -> reapply layouts"; apply_workspace_layout' SIGUSR1
+
+    echo "$(date): Watch daemon with IPC started (single loop)"
     
-    echo "$(date): Watch daemon with IPC started"
-    
-    # Initialize auto-layout as enabled by default
-    if [[ ! -f "$AUTO_LAYOUT_ENABLED_FILE" ]]; then
-        enable_auto_layout
-    fi
-    
-    # Start background window monitoring
-    watch_daemon_monitor &
-    local monitor_pid=$!
-    
-    # Handle IPC commands in foreground
-    daemon_command_loop
-    
-    # Clean up when done
-    kill "$monitor_pid" 2>/dev/null || true
-    cleanup_daemon_ipc
+    # Create IPC and write PID (deterministic readiness)
+    setup_daemon_ipc
+    umask 077
+    : "${PID_FILE:=$DAEMON_PIPE_DIR/daemon.pid}"
+    echo $$ > "$PID_FILE"
+
+    # Auto-layout default
+    [[ -f "$AUTO_LAYOUT_ENABLED_FILE" ]] || enable_auto_layout
+
+    # Initialize monitor information for daemon functions
+    get_screen_info
+
+    # SSOT, lock, and cooldown functions now defined in global scope
+
+    # Open FIFOs once
+    exec 3<>"$DAEMON_CMD_PIPE"
+    exec 4<>"$DAEMON_RESP_PIPE"
+
+    local TICK=0.25  # seconds
+
+    echo "$(date): entering main loop"
+    while true; do
+        local cmd
+        if read -t "$TICK" -r cmd <&3; then
+            # Handle a single command
+            local resp
+            resp="$(handle_daemon_command "$cmd" 2>&1)"
+            printf '%s\n' "$resp" >&4
+            # Let WM settle; also keep monitor from clobbering right away
+            cooldown_now 600
+            continue
+        fi
+
+        # ---- monitor tick ----
+        monitor_tick
+    done
 }
 
 # Generate current master state for comparison (extracted from watch_daemon_internal)
@@ -167,7 +299,7 @@ watch_daemon_monitor() {
             last_master_state="$current_state"
         fi
         
-        sleep 0.5  # Check every 500ms
+        sleep 0.75  # Check every 750ms for better battery life
     done
 }
 
@@ -216,54 +348,7 @@ watch_daemon_internal() {
     trap 'echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
     trap 'echo "$(date): Received reload signal - reapplying layouts"; apply_workspace_layout' SIGUSR1
     
-    # Function to generate current master state for comparison
-    get_current_master_state() {
-        local current_workspace
-        current_workspace=$(get_current_workspace)
-        
-        # Add small delay to ensure workspace switch is complete
-        sleep 0.05
-        
-        get_screen_info
-        local combined_state="workspace:$current_workspace|"
-        
-        echo "$(date): DEBUG - Processing workspace $current_workspace" >&2
-        
-        for monitor in "${MONITORS[@]}"; do
-            IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-            
-            # Get master window list for this monitor (current workspace only)
-            local master_list
-            master_list=$(get_or_create_master_window_list "$current_workspace" "$monitor")
-            
-            # Validate that all windows in the list are actually on current workspace
-            local validated_list=""
-            for window_id in $master_list; do
-                if [[ -n "$window_id" ]]; then
-                    local window_desktop
-                    window_desktop=$(wmctrl -l | grep "^$window_id " | awk '{print $2}')
-                    if [[ "$window_desktop" == "$current_workspace" || "$window_desktop" == "-1" ]]; then
-                        validated_list="$validated_list $window_id"
-                    fi
-                fi
-            done
-            master_list=$(echo "$validated_list" | xargs)
-            
-            # Also get window states to detect minimize/restore
-            local window_states=""
-            while IFS= read -r window_id; do
-                if [[ -n "$window_id" ]]; then
-                    local state
-                    state=$(xprop -id "$window_id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED" || echo "NORMAL")
-                    window_states="${window_states}${window_id}:${state};"
-                fi
-            done <<< "$master_list"
-            
-            combined_state="${combined_state}${monitor_name}=[${master_list// /,}]:${window_states}|"
-        done
-        
-        echo "$combined_state"
-    }
+    # Use the global get_current_master_state function (removed duplicate)
     
     # Function to apply layout when master state changes
     apply_workspace_layout() {
@@ -313,32 +398,34 @@ watch_daemon_internal() {
             last_master_state="$state_key"
         fi
         
-        # Fast polling interval for instant response
-        sleep 0.1
+        # Balanced polling interval for responsiveness vs battery life
+        sleep 1.0
     done
 }
 
 # Check if watch daemon is running
 is_daemon_running() {
-    pgrep -f "place-window.*watch.*daemon" > /dev/null
+    [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
 # Get daemon PID if running
 get_daemon_pid() {
-    pgrep -f "place-window.*watch.*daemon"
+    [[ -f "$PID_FILE" ]] && cat "$PID_FILE"
 }
 
 # Stop watch daemon
 stop_daemon() {
     if is_daemon_running; then
         echo "Stopping watch mode daemon..."
-        pkill -f "place-window.*watch.*daemon"
+        local pid=$(get_daemon_pid)
+        kill "$pid" 2>/dev/null || true
         
         # Give daemon time to clean up
         sleep 1
         
-        # Force cleanup pipes if daemon didn't do it
+        # Force cleanup pipes and PID file if daemon didn't do it
         cleanup_daemon_ipc 2>/dev/null || true
+        rm -f "$PID_FILE"
         
         echo "Watch mode stopped"
         return 0
@@ -356,8 +443,10 @@ start_daemon_background() {
     fi
     
     echo "Starting watch mode daemon..."
-    exec "$0" watch daemon &
+    nohup "$0" watch daemon >/dev/null 2>&1 &
     local daemon_pid=$!
+    echo "$daemon_pid" > "$PID_FILE"
+    disown || true
     echo "Watch daemon started in background (PID: $daemon_pid)"
     echo "Use 'place-window watch stop' to stop it"
     return 0
@@ -388,6 +477,70 @@ show_daemon_status() {
     fi
 }
 
+# SSOT functions now defined at top of file in global scope
+
+detect_current_ids_for_ws_mon() {  # args: workspace monitor_name -> echo ids
+    # You already have detection helpers that can return IDs per monitor for the current workspace.
+    # Reuse your code path that enumerates "windows_on_monitor" for a given monitor.
+    local ws="$1" mon="$2"
+    # Implementation hook: call your function that lists visible windows for that monitor.
+    # Fallback to wmctrl if needed; here we leverage your existing iterator inside apply_* that already builds the list.
+    list_windows_on_monitor_for_workspace "$ws" "$mon"
+}
+
+# Merge live detection with stored order, preserving relative order and appending new ids
+reconcile_ws_mon() {  # args: workspace monitor_name
+    local ws="$1" mon="$2" live stored id
+    live="$(detect_current_ids_for_ws_mon "$ws" "$mon")"
+
+    local k; k="$(__key "$ws" "$mon")"
+    state_lock
+      stored="${WINDOW_LISTS["$k"]-}"
+
+      declare -A IN_STO=() IN_LIVE=()
+      for id in $stored; do IN_STO["$id"]=1; done
+      for id in $live;   do IN_LIVE["$id"]=1; done
+
+      # keep existing ids in stored order
+      local kept=()
+      for id in $stored; do [[ ${IN_LIVE[$id]+x} ]] && kept+=("$id"); done
+
+      # append new ids in live order
+      local added=()
+      for id in $live; do [[ ${IN_STO[$id]+x} ]] || added+=("$id"); done
+
+      local merged="${kept[*]}"; [[ ${#added[@]} -gt 0 ]] && merged="${merged:+$merged }${added[*]}"
+
+      if [[ "$merged" != "$stored" ]]; then
+        WINDOW_LISTS["$k"]="$merged"
+        WINDOW_DIRTY["$k"]=1
+        WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
+      fi
+    state_unlock
+}
+
+monitor_tick() {
+    # Iterate just the current workspace; your layouts also operate per monitor.
+    local ws mon recs
+    ws="$(get_current_workspace)"
+    get_screen_info  # refresh monitors; you already call this elsewhere
+    for mon in $MONITORS; do
+        IFS=':' read -r monitor_name mx my mw mh <<< "$mon"
+
+        reconcile_ws_mon "$ws" "$monitor_name"
+
+        local k; k="$(__key "$ws" "$monitor_name")"
+        local dirty="${WINDOW_DIRTY["$k"]-0}"
+        if ( is_auto_layout_enabled || [[ "$dirty" -eq 1 ]] ) && monitor_should_apply; then
+            # Reapply using stored order only
+            reapply_saved_layout_for_monitor "$ws" "$mon"
+            WINDOW_DIRTY["$k"]=0
+        fi
+    done
+}
+
+# list_windows_on_monitor_for_workspace now defined at top of file
+
 #========================================
 # DAEMON-ONLY WINDOW LIST FUNCTIONS
 # These functions need initialized window lists and run in daemon context
@@ -406,36 +559,30 @@ trigger_daemon_reapply() {
     fi
 }
 
-# IPC Communication for daemon commands
-DAEMON_PIPE_DIR="${XDG_RUNTIME_DIR:-/tmp}/window-positioning"
-DAEMON_CMD_PIPE="$DAEMON_PIPE_DIR/commands"
-DAEMON_RESP_PIPE="$DAEMON_PIPE_DIR/responses"
+# IPC Communication (variables defined at top of file)
 
 # Send command to daemon and get response
 send_daemon_command() {
     local command="$1"
     
     if ! is_daemon_running; then
-        echo "Error: Daemon is not running. Start with: place-window watch start"
-        return 1
+        die "Daemon is not running. Start with: place-window watch start"
     fi
     
     # Ensure pipes exist
-    if [[ ! -p "$DAEMON_CMD_PIPE" ]]; then
-        echo "Error: Daemon command pipe not found"
-        return 1
-    fi
+    [[ -p "$DAEMON_CMD_PIPE" ]] || die "Daemon command pipe not found at $DAEMON_CMD_PIPE"
+    [[ -p "$DAEMON_RESP_PIPE" ]] || die "Daemon response pipe not found at $DAEMON_RESP_PIPE"
     
     # Send command and wait for response
-    echo "$command" > "$DAEMON_CMD_PIPE"
+    echo "$command" > "$DAEMON_CMD_PIPE" || die "Failed to send command to daemon"
     
     # Read response (with timeout)
+    local response
     if read -t 5 response < "$DAEMON_RESP_PIPE" 2>/dev/null; then
         echo "$response"
         return 0
     else
-        echo "Error: No response from daemon"
-        return 1
+        die "No response from daemon (timeout after 5 seconds)"
     fi
 }
 
@@ -445,6 +592,9 @@ handle_daemon_command() {
     local response=""
     
     case "$command" in
+        ping)
+            response="pong $(date +%s)"
+            ;;
         "auto")
             response=$(auto_layout_current_monitor 2>&1)
             ;;
@@ -776,6 +926,8 @@ swap_window_positions() {
             if [[ -n "$result" ]]; then
                 read -r window1_pos window2_pos <<< "$result"
                 
+                # Add cooldown to prevent monitor from immediately re-detecting and flickering
+                cooldown_now 600
                 # Directly reapply the saved layout for this monitor
                 reapply_saved_layout_for_monitor "$current_workspace" "$monitor1"
                 
@@ -838,6 +990,8 @@ cycle_window_positions() {
     # Update the persistent window list
     set_window_list "$current_workspace" "$monitor_name" "$new_list"
     
+    # Add cooldown to prevent monitor from immediately re-detecting and flickering
+    cooldown_now 600
     # Directly reapply the saved layout for this monitor
     reapply_saved_layout_for_monitor "$current_workspace" "$current_monitor"
     
@@ -881,6 +1035,8 @@ reverse_cycle_window_positions() {
     # Update the persistent window list
     set_window_list "$current_workspace" "$monitor_name" "$new_list"
     
+    # Add cooldown to prevent monitor from immediately re-detecting and flickering
+    cooldown_now 600
     # Directly reapply the saved layout for this monitor
     reapply_saved_layout_for_monitor "$current_workspace" "$current_monitor"
     
