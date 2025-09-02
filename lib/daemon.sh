@@ -492,7 +492,7 @@ monitor_tick() {
 
         k="$(key_wsmon "$ws" "$monitor_name")"
         local dirty="${WINDOW_DIRTY["$k"]-0}"
-        if ( is_auto_layout_enabled || [[ "$dirty" -eq 1 ]] ) && monitor_should_apply; then
+        if is_auto_layout_enabled && [[ "$dirty" -eq 1 ]] && monitor_should_apply; then
             # Reapply using stored order only
             reapply_saved_layout_for_monitor "$ws" "$mon"
             WINDOW_DIRTY["$k"]=0
