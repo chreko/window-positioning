@@ -36,19 +36,16 @@ get_frame_extents() {  # $1: window id
 }
 
 # --- Read CLIENT geometry consistently as x,y,w,h ---
-get_window_client_geometry() {  # $1: window id -> "x,y,w,h"
+get_window_client_geometry() {
     local id="$1"
-    local info x y w h
+    local info x y w h L R T B
     info=$(xwininfo -id "$id")
     x=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info")
     y=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info")
     w=$(awk '/Width:/ {print $NF}' <<<"$info")
     h=$(awk '/Height:/ {print $NF}' <<<"$info")
-
-    local L R T B
-    IFS=',' read -r L R T B <<<"$(get_frame_extents "$id")"
-
-    # Convert frame (outer) position to client (inner) position
+    IFS=',' read -r L R T B <<<"$(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null | awk -F' = ' '{print $2}' | sed 's/, /,/g')"
+    [[ -z "$L" ]] && L=0 R=0 T=0 B=0
     echo "$((x + L)),$((y + T)),$w,$h"
 }
 
@@ -651,54 +648,24 @@ swap_window_geometries() {
     place_window_client_geometry "$window2" "$x1" "$y1" "$w1" "$h1"
 }
 
-# Cycle window positions clockwise (current monitor only) - using serial swaps
 cycle_window_positions() {
-    # Get current context
-    get_current_context
-    
-    # Get windows using configured ordering strategy (defaults to spatial)
-    local windows=()
-    mapfile -t windows < <(get_windows_ordered "$CURRENT_MONITOR_NAME")
-    local n="${#windows[@]}"
-    
-    if (( n < 2 )); then
-        echo "Nothing to cycle (need at least 2 windows)"
-        return 0
-    fi
-
-    # For clockwise cycle (A B C → C A B):
-    # We swap pairs starting from position 1
+    mapfile -t windows < <(get_windows_ordered)
+    local n=${#windows[@]}
+    (( n < 2 )) && return 0
+    # Clockwise: A B C -> C A B
     for (( i = 1; i < n; i++ )); do
         swap_window_geometries "${windows[0]}" "${windows[$i]}"
     done
-
-    prevent_relayout
-    echo "Cycled ${n} window(s) clockwise by swapping geometries."
 }
 
-# Reverse cycle window positions (counter-clockwise, current monitor only)
 reverse_cycle_window_positions() {
-    # Get current context
-    get_current_context
-    
-    # Get windows using configured ordering strategy (defaults to spatial)
-    local windows=()
-    mapfile -t windows < <(get_windows_ordered "$CURRENT_MONITOR_NAME")
-    local n="${#windows[@]}"
-    
-    if (( n < 2 )); then
-        echo "Nothing to cycle (need at least 2 windows)"
-        return 0
-    fi
-
-    # For counter-clockwise cycle (A B C → B C A):
-    # We swap pairs starting from the end
+    mapfile -t windows < <(get_windows_ordered)
+    local n=${#windows[@]}
+    (( n < 2 )) && return 0
+    # Counter-clockwise: A B C -> B C A
     for (( i = n - 1; i > 0; i-- )); do
         swap_window_geometries "${windows[0]}" "${windows[$i]}"
     done
-
-    prevent_relayout
-    echo "Reverse-cycled ${n} window(s) counter-clockwise by swapping geometries."
 }
 
 #========================================
