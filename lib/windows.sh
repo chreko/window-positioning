@@ -55,6 +55,91 @@ place_window_client_geometry() {  # $1:id $2:x $3:y $4:w $5:h
     wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}" 2>/dev/null
 }
 
+# ----- Stable geometry helpers (wmctrl) -----
+
+# Read FRAME geometry using wmctrl itself (id -> "x,y,w,h")
+get_window_frame_geometry_wmctrl() {
+    # Normalize id to lowercase (wmctrl prints lowercase)
+    local id="${1,,}"
+    # wmctrl -i -lG: $1=id $3=x $4=y $5=w $6=h
+    wmctrl -i -lG | awk -v id="$id" '$1==id{print $3","$4","$5","$6; f=1} END{if(!f) exit 1}'
+}
+
+# Apply geometry using wmctrl (expects either frame or client X/Y depending on WM)
+_apply_with_wmctrl() {  # id x y w h
+    wmctrl -i -r "$1" -e "0,$2,$3,$4,$5" 2>/dev/null
+}
+
+# Optional: client geometry (from xwininfo + frame extents)
+_get_client_geom() {  # id -> "x,y,w,h"
+    local id="$1" info x y w h L R T B
+    info=$(xwininfo -id "$id")
+    x=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info")
+    y=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info")
+    w=$(awk '/Width:/ {print $NF}' <<<"$info")
+    h=$(awk '/Height:/ {print $NF}' <<<"$info")
+    read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
+                       | awk -F' = ' '{print $2}' | sed 's/, / /g')
+    : "${L:=0}"; : "${T:=0}"
+    echo "$((x + L)),$((y + T)),$w,$h"
+}
+
+# ----- Detect how wmctrl -e interprets X/Y on this WM -----
+# Caches in WMCTRL_COORD_MODE: "frame" or "client"
+detect_wmctrl_coord_mode() {
+    [[ -n "$WMCTRL_COORD_MODE" ]] && return 0
+    # Pick the currently active window
+    local active
+    active=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk -F'# ' '{print $2}')
+    [[ -z "$active" ]] && { WMCTRL_COORD_MODE="frame"; return 0; }
+
+    # Baselines
+    local fx fy fw fh cx cy cw ch
+    IFS=',' read -r fx fy fw fh <<<"$(get_window_frame_geometry_wmctrl "$active")"
+    IFS=',' read -r cx cy cw ch <<<"$(_get_client_geom "$active")"
+
+    # Try a no-op apply using FRAME coords
+    _apply_with_wmctrl "$active" "$fx" "$fy" "$fw" "$fh"
+    sleep 0.02
+    # Read back frame position
+    local nfx nfy
+    IFS=',' read -r nfx nfy _ _ <<<"$(get_window_frame_geometry_wmctrl "$active")"
+
+    if [[ "$nfx" == "$fx" && "$nfy" == "$fy" ]]; then
+        WMCTRL_COORD_MODE="frame"
+    else
+        # Try no-op using CLIENT coords
+        _apply_with_wmctrl "$active" "$cx" "$cy" "$cw" "$ch"
+        sleep 0.02
+        IFS=',' read -r nfx nfy _ _ <<<"$(get_window_frame_geometry_wmctrl "$active")"
+        # If moving to client coords is a no-op, wmctrl wants client
+        if [[ "$nfx" == "$fx" && "$nfy" == "$fy" ]]; then
+            # Some WMs still end up identical; prefer client if first try shifted
+            WMCTRL_COORD_MODE="client"
+        else
+            WMCTRL_COORD_MODE="client"
+        fi
+    fi
+}
+
+# Apply geometry in the coordinate space that wmctrl expects on this WM
+apply_geom_adaptive() {  # id targetFrameX targetFrameY width height
+    detect_wmctrl_coord_mode
+    local id="$1" fx="$2" fy="$3" w="$4" h="$5"
+    if [[ "$WMCTRL_COORD_MODE" == "client" ]]; then
+        # Convert frame X/Y -> client X/Y (only when needed)
+        local cx cy cw ch L R T B info x y
+        IFS=',' read -r cx cy cw ch <<<"$(_get_client_geom "$id")"  # current client
+        # We only need L,T; get from current window
+        read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+        : "${L:=0}"; : "${T:=0}"
+        _apply_with_wmctrl "$id" "$((fx + L))" "$((fy + T))" "$w" "$h"
+    else
+        _apply_with_wmctrl "$id" "$fx" "$fy" "$w" "$h"
+    fi
+}
+
 # Apply geometry to window
 apply_geometry() {
     local id="$1" x="$2" y="$3" w="$4" h="$5"
@@ -72,31 +157,22 @@ move_to_workspace() {
 # Save window position to presets
 save_position() {
     local name="$1" id="$2"
-    local geom=$(get_window_geometry "$id")   # ← switch back to frame X/Y + client W/H
-    
-    # Remove existing entry if exists
-    grep -v "^${name}=" "$PRESETS_FILE" > "${PRESETS_FILE}.tmp" || true
+    local f
+    f=$(get_window_frame_geometry_wmctrl "$id") || { echo "Window not found"; return 1; }
+    grep -v "^${name}=" "$PRESETS_FILE" > "${PRESETS_FILE}.tmp" 2>/dev/null || true
     mv "${PRESETS_FILE}.tmp" "$PRESETS_FILE"
-    
-    # Add new entry
-    echo "${name}=${geom}" >> "$PRESETS_FILE"
-    echo "Position saved as '$name': $geom"
+    echo "${name}=${f}" >> "$PRESETS_FILE"
+    echo "Saved '$name' as $f"
 }
 
 # Load saved position from presets
 load_position() {
     local name="$1" id="$2"
-    local geom=$(grep "^${name}=" "$PRESETS_FILE" 2>/dev/null | cut -d= -f2)
-    
-    if [[ -z "$geom" ]]; then
-        echo "Error: Preset '$name' not found"
-        echo "Available presets:"
-        grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
-        exit 1
-    fi
-    
-    IFS=',' read -r x y w h <<< "$geom"
-    apply_geometry "$id" "$x" "$y" "$w" "$h"   # ← uses frame X/Y; client W/H
+    local geom
+    geom=$(grep "^${name}=" "$PRESETS_FILE" 2>/dev/null | cut -d= -f2)
+    [[ -z "$geom" ]] && { echo "Preset '$name' not found"; return 1; }
+    IFS=',' read -r fx fy w h <<<"$geom"
+    apply_geom_adaptive "$id" "$fx" "$fy" "$w" "$h"
 }
 
 # Get all visible windows on current desktop
@@ -638,16 +714,16 @@ swap_window_positions() {
 swap_window_geometries() {
     local w1="$1" w2="$2"
 
-    # get_window_geometry returns: frameX,frameY,clientW,clientH
-    local g1 g2 fx1 fy1 w1c h1c fx2 fy2 w2c h2c
-    g1=$(get_window_geometry "$w1")
-    g2=$(get_window_geometry "$w2")
-    IFS=',' read -r fx1 fy1 w1c h1c <<<"$g1"
-    IFS=',' read -r fx2 fy2 w2c h2c <<<"$g2"
+    # Read both windows' FRAME geometry via wmctrl (x,y,w,h)
+    local f1 f2 fx1 fy1 w1 h1 fx2 fy2 w2 h2
+    f1=$(get_window_frame_geometry_wmctrl "$w1") || return 1
+    f2=$(get_window_frame_geometry_wmctrl "$w2") || return 1
+    IFS=',' read -r fx1 fy1 w1 h1 <<<"$f1"
+    IFS=',' read -r fx2 fy2 w2 h2 <<<"$f2"
 
-    # Apply directly with frame X/Y and client W/H (what wmctrl -e wants)
-    apply_geometry "$w1" "$fx2" "$fy2" "$w2c" "$h2c"
-    apply_geometry "$w2" "$fx1" "$fy1" "$w1c" "$h1c"
+    # Swap positions/sizes with adaptive writer (no drift)
+    apply_geom_adaptive "$w1" "$fx2" "$fy2" "$w2" "$h2"
+    apply_geom_adaptive "$w2" "$fx1" "$fy1" "$w1" "$h1"
 }
 
 cycle_window_positions() {
