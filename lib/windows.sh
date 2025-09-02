@@ -72,7 +72,7 @@ move_to_workspace() {
 # Save window position to presets
 save_position() {
     local name="$1" id="$2"
-    local geom=$(get_window_client_geometry "$id")   # ← use client geometry
+    local geom=$(get_window_geometry "$id")   # ← switch back to frame X/Y + client W/H
     
     # Remove existing entry if exists
     grep -v "^${name}=" "$PRESETS_FILE" > "${PRESETS_FILE}.tmp" || true
@@ -96,7 +96,7 @@ load_position() {
     fi
     
     IFS=',' read -r x y w h <<< "$geom"
-    place_window_client_geometry "$id" "$x" "$y" "$w" "$h"   # ← ensure client apply
+    apply_geometry "$id" "$x" "$y" "$w" "$h"   # ← uses frame X/Y; client W/H
 }
 
 # Get all visible windows on current desktop
@@ -636,16 +636,18 @@ swap_window_positions() {
 
 # Helper function to swap two windows' geometries directly
 swap_window_geometries() {
-    local window1="$1" window2="$2"
+    local w1="$1" w2="$2"
 
-    local g1 g2 x1 y1 w1 h1 x2 y2 w2 h2
-    g1=$(get_window_client_geometry "$window1")
-    g2=$(get_window_client_geometry "$window2")
-    IFS=',' read -r x1 y1 w1 h1 <<<"$g1"
-    IFS=',' read -r x2 y2 w2 h2 <<<"$g2"
+    # get_window_geometry returns: frameX,frameY,clientW,clientH
+    local g1 g2 fx1 fy1 w1c h1c fx2 fy2 w2c h2c
+    g1=$(get_window_geometry "$w1")
+    g2=$(get_window_geometry "$w2")
+    IFS=',' read -r fx1 fy1 w1c h1c <<<"$g1"
+    IFS=',' read -r fx2 fy2 w2c h2c <<<"$g2"
 
-    place_window_client_geometry "$window1" "$x2" "$y2" "$w2" "$h2"
-    place_window_client_geometry "$window2" "$x1" "$y1" "$w1" "$h1"
+    # Apply directly with frame X/Y and client W/H (what wmctrl -e wants)
+    apply_geometry "$w1" "$fx2" "$fy2" "$w2c" "$h2c"
+    apply_geometry "$w2" "$fx1" "$fy1" "$w1c" "$h1c"
 }
 
 cycle_window_positions() {
