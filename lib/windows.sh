@@ -150,8 +150,8 @@ get_visible_windows_by_position() {
     
     # Use get_visible_windows() for proper filtering
     while IFS= read -r id; do
-        # Get window geometry
-        local geom=$(get_window_geometry "$id")
+        # Get window client geometry for consistent positioning
+        local geom=$(get_window_client_geometry "$id")
         if [[ -n "$geom" ]]; then
             IFS=',' read -r x y w h <<< "$geom"
             
@@ -374,7 +374,7 @@ focus_window() {
             ;;
         up|down|left|right)
             # Geometric navigation
-            local current_geom=$(get_window_geometry "$current_id")
+            local current_geom=$(get_window_client_geometry "$current_id")
             IFS=',' read -r cx cy cw ch <<< "$current_geom"
             local center_x=$((cx + cw / 2))
             local center_y=$((cy + ch / 2))
@@ -385,7 +385,7 @@ focus_window() {
             for window_id in "${windows[@]}"; do
                 [[ "$window_id" == "$current_id" ]] && continue
                 
-                local geom=$(get_window_geometry "$window_id")
+                local geom=$(get_window_client_geometry "$window_id")
                 IFS=',' read -r x y w h <<< "$geom"
                 local other_center_x=$((x + w / 2))
                 local other_center_y=$((y + h / 2))
@@ -440,7 +440,7 @@ focus_window() {
 # Find windows adjacent to target window for simultaneous resize
 find_adjacent_windows() {
     local target_id="$1"
-    local target_geom=$(get_window_geometry "$target_id")
+    local target_geom=$(get_window_client_geometry "$target_id")
     IFS=',' read -r tx ty tw th <<< "$target_geom"
     
     # Get current monitor for the target window
@@ -451,7 +451,7 @@ find_adjacent_windows() {
     for id in "${windows[@]}"; do
         [[ "$id" == "$target_id" ]] && continue
         
-        local geom=$(get_window_geometry "$id")
+        local geom=$(get_window_client_geometry "$id")
         IFS=',' read -r x y w h <<< "$geom"
         
         # Check if windows share an edge (horizontally or vertically adjacent)
