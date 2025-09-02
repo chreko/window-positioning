@@ -95,27 +95,6 @@ source "$INSTALL_LIB_DIR/advanced.sh"
 init_config
 load_config
 
-# Check if this command needs window list initialization
-needs_initialization() {
-    case "${1:-}" in
-        ""|auto|master|cycle|swap|focus|test-init|debug-lists)
-            return 0  # Needs initialization
-            ;;
-        watch)
-            [[ "${2:-}" == "daemon" ]] && return 0
-            return 1  # Watch management commands don't need init
-            ;;
-        *)
-            return 1  # Simple commands don't need initialization
-            ;;
-    esac
-}
-
-# Initialize window lists only for commands that need them
-if needs_initialization "${1:-}" "${2:-}"; then
-    ensure_initialized_once
-fi
-
 # Check if running in daemon mode (prevent interactive prompts)
 DAEMON_MODE=${DAEMON_MODE:-false}
 

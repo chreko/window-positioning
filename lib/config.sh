@@ -52,6 +52,13 @@ DECORATION_HEIGHT=24
 
 # Width: side border width (left + right combined) - usually 0 for modern themes  
 DECORATION_WIDTH=0
+
+# Window ordering strategy
+# Available strategies:
+#   position/spatial     - Order by position (left-to-right, top-to-bottom) - DEFAULT
+#   creation/chronological - Order by window creation time
+#   stacking/focus       - Order by stacking/focus history (most recent first)
+WINDOW_ORDER_STRATEGY=position
 EOF
     fi
 
@@ -85,6 +92,10 @@ load_config() {
     # Window decoration dimensions - configurable via settings
     DECORATION_HEIGHT=${DECORATION_HEIGHT:-30}
     DECORATION_WIDTH=${DECORATION_WIDTH:-2}
+    
+    # Window ordering strategy
+    WINDOW_ORDER_STRATEGY=${WINDOW_ORDER_STRATEGY:-position}
+    export WINDOW_ORDER_STRATEGY
 }
 
 # Update a setting in the config file
@@ -167,10 +178,7 @@ auto_detect_decorations() {
     fi
 }
 
-# Get current workspace
-get_current_workspace() {
-    wmctrl -d | grep '*' | cut -d' ' -f1
-}
+# get_current_workspace() moved to windows.sh
 
 # Save workspace meta layout
 save_workspace_meta_layout() {
@@ -260,110 +268,7 @@ get_workspace_monitor_layout() {
     echo "$default_layout"
 }
 
-# Save master window list for workspace/monitor (single source of truth)
-save_master_window_list() {
-    local workspace="$1"
-    local monitor_name="$2"
-    local window_list="$3"  # Space-separated window IDs in master order
-    
-    local workspace_file="${CONFIG_DIR}/workspace-${workspace}-monitor.conf"
-    mkdir -p "$(dirname "$workspace_file")"
-    touch "$workspace_file"
-    
-    local key="MONITOR_${monitor_name}_MASTER_LIST"
-    
-    # Update or add the master list entry  
-    if grep -q "^${key}=" "$workspace_file"; then
-        sed -i "s/^${key}=.*/${key}=${window_list}/" "$workspace_file"
-    else
-        echo "${key}=${window_list}" >> "$workspace_file"
-    fi
-}
-
-# Get master window list for workspace/monitor (single source of truth)
-get_master_window_list() {
-    local workspace="$1"
-    local monitor_name="$2"
-    
-    local workspace_file="${CONFIG_DIR}/workspace-${workspace}-monitor.conf"
-    local key="MONITOR_${monitor_name}_MASTER_LIST"
-    
-    if [[ -f "$workspace_file" ]]; then
-        local saved_list=$(grep "^${key}=" "$workspace_file" 2>/dev/null | cut -d'=' -f2-)
-        echo "$saved_list"
-    fi
-}
-
-# Get or create master window list (ensures single source of truth exists)
-get_or_create_master_window_list() {
-    local workspace="$1"
-    local monitor="$2"  # Full monitor string "name:x:y:w:h"
-    
-    IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-    
-    # Try to get existing master list
-    local existing_list
-    existing_list=$(get_master_window_list "$workspace" "$monitor_name")
-    
-    if [[ -n "$existing_list" ]]; then
-        # Validate that stored windows still exist and are on this monitor
-        local valid_windows=()
-        for window_id in $existing_list; do
-            # Check if window still exists, is on this monitor AND this workspace
-            if xdotool getwindowgeometry "$window_id" >/dev/null 2>&1; then
-                local window_monitor
-                window_monitor=$(get_window_monitor "$window_id")
-                local window_desktop
-                window_desktop=$(wmctrl -l | grep "^$window_id " | awk '{print $2}')
-                if [[ "$window_monitor" == "$monitor" && ("$window_desktop" == "$workspace" || "$window_desktop" == "-1") ]]; then
-                    valid_windows+=("$window_id")
-                fi
-            fi
-        done
-        
-        # Get any new windows on this monitor not in stored list
-        local current_windows=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && current_windows+=("$line")
-        done < <(get_visible_windows_on_monitor_by_creation "$monitor" "$workspace")
-        
-        # Add new windows to end of master list (preserve master order)
-        local final_list=("${valid_windows[@]}")
-        for window_id in "${current_windows[@]}"; do
-            local already_in_list=false
-            for existing_id in "${valid_windows[@]}"; do
-                if [[ "$existing_id" == "$window_id" ]]; then
-                    already_in_list=true
-                    break
-                fi
-            done
-            if [[ "$already_in_list" == false ]]; then
-                final_list+=("$window_id")
-            fi
-        done
-        
-        # Update stored list if it changed
-        local new_list_str="${final_list[*]}"
-        if [[ "$new_list_str" != "$existing_list" ]]; then
-            save_master_window_list "$workspace" "$monitor_name" "$new_list_str"
-        fi
-        
-        # Return the final master-ordered list
-        printf '%s\n' "${final_list[@]}"
-    else
-        # No existing list - create new one from creation order
-        local windows_on_monitor=()
-        while IFS= read -r line; do
-            [[ -n "$line" ]] && windows_on_monitor+=("$line")
-        done < <(get_visible_windows_on_monitor_by_creation "$monitor" "$workspace")
-        
-        if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
-            local window_list_str="${windows_on_monitor[*]}"
-            save_master_window_list "$workspace" "$monitor_name" "$window_list_str"
-            printf '%s\n' "${windows_on_monitor[@]}"
-        fi
-    fi
-}
+# Window ID persistence removed - only layout preferences should be saved
 
 # Clear workspace monitor layout
 clear_workspace_monitor_layout() {

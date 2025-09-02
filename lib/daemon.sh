@@ -29,7 +29,7 @@ source "$DAEMON_DIR/layouts.sh"
 
 # --- Daemon-specific state tracking (SSOT is in windows.sh) ---
 # Dirty and generation tracking for daemon's reconciliation logic
-declare -Ag WINDOW_DIRTY WINDOW_GEN 2>/dev/null || true
+declare -Ag WINDOW_DIRTY WINDOW_GEN WINDOW_COUNT 2>/dev/null || true
 
 # Hold map to protect manual operations from immediate reconciliation
 declare -Ag HOLD_UNTIL_MS 2>/dev/null || true
@@ -69,81 +69,11 @@ monitor_should_apply() {
 }
 
 # Geometry helper functions for stateless cycle operations
-get_window_geometry() {
-    local wid="$1"
-    # Get window geometry using xdotool (returns client area)
-    local geometry
-    geometry=$(xdotool getwindowgeometry "$wid" 2>/dev/null | grep -E '(Position|Geometry)' | awk '{print $2}' | paste -sd':')
-    if [[ -n "$geometry" ]]; then
-        # Format: x,y (WIDTHxHEIGHT) -> x:y:w:h
-        echo "$geometry" | sed 's/,/:/; s/ (/:/; s/x/:/; s/)//'
-    fi
-}
+# get_window_geometry() moved to windows.sh (comma-separated format) to avoid duplication
 
-place_window_geometry() {
-    local wid="$1" x="$2" y="$3" w="$4" h="$5"
-    # Apply geometry using wmctrl
-    wmctrl -i -r "$wid" -e "0,$x,$y,$w,$h" 2>/dev/null
-}
+# Window functions moved to windows.sh
 
-order_windows_spatial_on_monitor() {  # ws mon_name -> echo IDs in L→R then T→B
-    local ws="$1" mon="$2"
-    # Use wmctrl -lG once; filter to workspace; keep only this monitor; sort by (x,y)
-    wmctrl -lG 2>/dev/null | awk -v ws="$ws" '$2==ws {print $1, $3, $4}' |
-    while read -r id x y; do
-        [[ "$(get_window_monitor "$id" | cut -d: -f1)" == "$mon" ]] && echo "$id $x $y"
-    done | sort -k2,2n -k3,3n | awk '{print $1}'
-}
-
-# Window detection function that respects SSOT first, then falls back to spatial order for bootstrap
-list_windows_on_monitor_for_workspace() {  # ws mon_name -> echo "winids..."
-    local ws="$1" mon="$2"
-
-    # 1) If SSOT already exists for this (workspace, monitor), use it verbatim
-    local stored
-    stored="$(get_window_list "$ws" "$mon")"
-    if [[ -n "$stored" ]]; then
-        echo "$stored"
-        return 0
-    fi
-
-    # 2) Bootstrap order from spatial position (left-to-right, then top-to-bottom)
-    #    This is much closer to what the user sees than creation order.
-    wmctrl -lG 2>/dev/null | awk -v ws="$ws" '
-        $2 == ws { printf "%s %s %s %s %s\n", $1, $3, $4, $5, $6 }' |
-    while read -r wid x y w h; do
-        # Keep only windows on this monitor
-        if [[ "$(get_window_monitor "$wid" | cut -d: -f1)" == "$mon" ]]; then
-            printf "%s %s %s\n" "$wid" "$x" "$y"
-        fi
-    done | sort -k2,2n -k3,3n | awk '{print $1}'
-}
-
-# Get windows sorted by creation order for specific workspace - stable for master layouts  
-get_visible_windows_by_creation_for_workspace() {
-    local target_workspace="$1"
-    
-    # wmctrl -l lists windows in creation order (oldest first)
-    wmctrl -l | while read -r line; do
-        local id=$(echo "$line" | awk '{print $1}')
-        local desktop=$(echo "$line" | awk '{print $2}')
-        
-        # Skip windows not on target workspace
-        [[ "$desktop" != "$target_workspace" && "$desktop" != "-1" ]] && continue
-        
-        # Check if window is minimized
-        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN")
-        [[ -n "$state" ]] && continue
-        
-        # Skip panels, docks, and desktop
-        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
-        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
-            continue
-        fi
-        
-        echo "$id"
-    done
-}
+# get_visible_windows_by_creation_for_workspace() moved to windows.sh to avoid duplication
 
 
 # Set up IPC pipes for daemon communication
@@ -277,7 +207,7 @@ get_current_master_state() {
         
         # Get window list for this monitor (current workspace only)
         local master_list
-        master_list=$(get_window_list "$current_workspace" "$monitor_name")
+        master_list=$(get_visible_windows "$monitor_name")
         
         # Validate that all windows in the list are actually on current workspace
         local validated_list=""
@@ -525,53 +455,22 @@ show_daemon_status() {
 
 # detect_current_ids_for_ws_mon removed - using list_windows_on_monitor_for_workspace directly
 
-# Merge live detection with stored order, preserving relative order and appending new ids
+# Simple window change detection - no persistence of window IDs
 reconcile_ws_mon() {  # args: workspace monitor_name
-    local ws="$1" mon="$2" live stored id
-    live="$(list_windows_on_monitor_for_workspace "$ws" "$mon")"
-
+    local ws="$1" mon="$2"
     local k; k="$(key_wsmon "$ws" "$mon")"
-    stored="$(get_window_list "$ws" "$mon")"
     
-    # If no stored order yet, initialize with live detection
-    if [[ -z "$stored" ]]; then
-        if [[ -n "$live" ]]; then
-            set_window_list "$ws" "$mon" "$live"
-            WINDOW_DIRTY["$k"]=1
-            WINDOW_GEN["$k"]=1
-        fi
-        return
-    fi
-
-    # Build set of live windows for membership check
-    declare -A LIVE_SET=()
-    for id in $live; do LIVE_SET["$id"]=1; done
-
-    # Start with stored order, keeping only windows that still exist
-    local updated=""
-    local removed=0
-    for id in $stored; do
-        if [[ ${LIVE_SET[$id]+x} ]]; then
-            updated="${updated:+$updated }$id"
-            unset LIVE_SET["$id"]  # Mark as processed
-        else
-            removed=1
-        fi
-    done
-
-    # Append any new windows that weren't in stored
-    local added=0
-    for id in $live; do
-        if [[ ${LIVE_SET[$id]+x} ]]; then  # Still in set = new window
-            updated="${updated:+$updated }$id"
-            added=1
-        fi
-    done
-
-    # Only update SSOT if membership changed (ignore order-only differences)
-    if [[ "$(tr ' ' '\n' <<< "$stored" | sort -u)" != "$(tr ' ' '\n' <<< "$updated" | sort -u)" ]]; then
-        set_window_list "$ws" "$mon" "$updated"
+    # Get current windows
+    local current_windows
+    current_windows="$(get_visible_windows "$mon")"
+    local current_count
+    current_count=$(echo "$current_windows" | grep -c . 2>/dev/null || echo 0)
+    
+    # Check if window count changed since last check
+    local last_count="${WINDOW_COUNT["$k"]-0}"
+    if [[ "$current_count" -ne "$last_count" ]]; then
         WINDOW_DIRTY["$k"]=1
+        WINDOW_COUNT["$k"]=$current_count
         WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
     fi
 }
@@ -711,13 +610,10 @@ master_stack_layout_current_monitor() {
     local current_monitor=$(get_current_monitor)
     local current_workspace=$(get_current_workspace)
     
-    # Get windows from the persistent window list (respects swap/cycle order)
+    # Get windows using live snapshot with configured ordering strategy
     IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
-    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
     local windows_on_monitor=()
-    if [[ -n "$current_list" ]]; then
-        read -ra windows_on_monitor <<< "$current_list"
-    fi
+    mapfile -t windows_on_monitor < <(get_visible_windows "$monitor_name")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -766,7 +662,7 @@ master_stack_layout() {
     for monitor in "${MONITORS[@]}"; do
         # Get windows from persistent list for this monitor
         IFS=':' read -r name mx my mw mh <<< "$monitor"
-        local current_list=$(get_window_list "$current_workspace" "$name")
+        local current_list=$(get_visible_windows "$name")
         local windows_on_monitor=()
         if [[ -n "$current_list" ]]; then
             read -ra windows_on_monitor <<< "$current_list"
@@ -814,13 +710,10 @@ center_master_layout_current_monitor() {
     local current_monitor=$(get_current_monitor)
     local current_workspace=$(get_current_workspace)
     
-    # Get windows from the persistent window list (respects swap/cycle order)
+    # Get windows using live snapshot with configured ordering strategy
     IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
-    local current_list=$(get_window_list "$current_workspace" "$monitor_name")
     local windows_on_monitor=()
-    if [[ -n "$current_list" ]]; then
-        read -ra windows_on_monitor <<< "$current_list"
-    fi
+    mapfile -t windows_on_monitor < <(get_visible_windows "$monitor_name")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -844,241 +737,11 @@ center_master_layout_current_monitor() {
     trigger_daemon_reapply >/dev/null 2>&1
 }
 # Focus window navigation
-focus_window() {
-    local direction="$1"  # next, prev, up, down, left, right
-    local current_id=$(xdotool getactivewindow 2>/dev/null || echo "")
-    
-    if [[ -z "$current_id" ]]; then
-        echo "No active window found"
-        return 1
-    fi
-    
-    local windows=($(get_visible_windows_by_position))
-    local count=${#windows[@]}
-    
-    if [[ $count -le 1 ]]; then
-        echo "Not enough windows for navigation"
-        return 1
-    fi
-    
-    case "$direction" in
-        next|prev)
-            # Find current window index
-            local current_index=-1
-            for ((i=0; i<count; i++)); do
-                if [[ "${windows[i]}" == "$current_id" ]]; then
-                    current_index=$i
-                    break
-                fi
-            done
-            
-            if [[ $current_index -eq -1 ]]; then
-                echo "Current window not found in visible windows list"
-                return 1
-            fi
-            
-            local next_index
-            if [[ "$direction" == "next" ]]; then
-                next_index=$(( (current_index + 1) % count ))
-            else
-                next_index=$(( (current_index - 1 + count) % count ))
-            fi
-            
-            local target_window="${windows[next_index]}"
-            xdotool windowactivate "$target_window"
-            echo "Focused ${direction} window ($(xdotool getwindowname "$target_window" 2>/dev/null || echo "ID: $target_window"))"
-            ;;
-        up|down|left|right)
-            # Geometric navigation
-            local current_geom=$(get_window_geometry "$current_id")
-            IFS=',' read -r cx cy cw ch <<< "$current_geom"
-            local center_x=$((cx + cw / 2))
-            local center_y=$((cy + ch / 2))
-            
-            local best_window=""
-            local best_distance=99999
-            
-            for window_id in "${windows[@]}"; do
-                [[ "$window_id" == "$current_id" ]] && continue
-                
-                local geom=$(get_window_geometry "$window_id")
-                IFS=',' read -r x y w h <<< "$geom"
-                local other_center_x=$((x + w / 2))
-                local other_center_y=$((y + h / 2))
-                
-                local valid=false
-                local distance=0
-                
-                case "$direction" in
-                    up)
-                        if [[ $other_center_y -lt $center_y ]]; then
-                            distance=$(( (center_x - other_center_x) * (center_x - other_center_x) + (center_y - other_center_y) * (center_y - other_center_y) ))
-                            valid=true
-                        fi
-                        ;;
-                    down)
-                        if [[ $other_center_y -gt $center_y ]]; then
-                            distance=$(( (center_x - other_center_x) * (center_x - other_center_x) + (other_center_y - center_y) * (other_center_y - center_y) ))
-                            valid=true
-                        fi
-                        ;;
-                    left)
-                        if [[ $other_center_x -lt $center_x ]]; then
-                            distance=$(( (center_x - other_center_x) * (center_x - other_center_x) + (center_y - other_center_y) * (center_y - other_center_y) ))
-                            valid=true
-                        fi
-                        ;;
-                    right)
-                        if [[ $other_center_x -gt $center_x ]]; then
-                            distance=$(( (other_center_x - center_x) * (other_center_x - center_x) + (center_y - other_center_y) * (center_y - other_center_y) ))
-                            valid=true
-                        fi
-                        ;;
-                esac
-                
-                if [[ $valid == true && $distance -lt $best_distance ]]; then
-                    best_distance=$distance
-                    best_window="$window_id"
-                fi
-            done
-            
-            if [[ -n "$best_window" ]]; then
-                xdotool windowactivate "$best_window"
-                echo "Focused window to the $direction ($(xdotool getwindowname "$best_window" 2>/dev/null || echo "ID: $best_window"))"
-            else
-                echo "No window found in $direction direction"
-                return 1
-            fi
-            ;;
-    esac
-}
-
-# Window swapping functionality
-swap_window_positions() {
-    echo "Select first window to swap:"
-    local window1=$(pick_window)
-    echo "Select second window to swap:"
-    local window2=$(pick_window)
-    
-    if [[ "$window1" == "$window2" ]]; then
-        echo "Cannot swap window with itself"
-        return 1
-    fi
-    
-    # Get current workspace and monitor info
-    local current_workspace=$(get_current_workspace)
-    local monitor1=$(get_window_monitor "$window1")
-    local monitor2=$(get_window_monitor "$window2")
-    
-    # Get workspace for each window to verify they're on current workspace
-    local window1_workspace=$(wmctrl -l 2>/dev/null | grep "^$window1 " | awk '{print $2}')
-    local window2_workspace=$(wmctrl -l 2>/dev/null | grep "^$window2 " | awk '{print $2}')
-    
-    # Check if both windows are on the same monitor AND same workspace
-    if [[ "$monitor1" == "$monitor2" ]]; then
-        # Verify both windows are on current workspace (or sticky windows with -1)
-        if [[ ("$window1_workspace" == "$current_workspace" || "$window1_workspace" == "-1") && 
-              ("$window2_workspace" == "$current_workspace" || "$window2_workspace" == "-1") ]]; then
-            
-            local monitor_name=$(echo "$monitor1" | cut -d':' -f1)
-            
-            # Swap windows in the persistent window list only
-            local result=$(swap_windows_in_list "$current_workspace" "$monitor_name" "$window1" "$window2")
-            
-            if [[ -n "$result" ]]; then
-                read -r window1_pos window2_pos <<< "$result"
-                
-                # Add hold to prevent monitor from immediately reconciling the change
-                hold_now "$current_workspace" "$(echo "$monitor1" | cut -d: -f1)" 900
-                # Add cooldown to prevent monitor from immediately re-detecting and flickering
-                cooldown_now 600
-                # Directly reapply the saved layout for this monitor
-                reapply_saved_layout_for_monitor "$current_workspace" "$monitor1"
-                
-                # Inform user about the master order swap
-                if [[ $window1_pos -eq 0 ]]; then
-                    echo "Former master window (position 0) swapped with window at position $window2_pos"
-                elif [[ $window2_pos -eq 0 ]]; then
-                    echo "Window at position $window1_pos became the new master (position 0)"
-                else
-                    echo "Windows at positions $window1_pos and $window2_pos swapped in master order"
-                fi
-                
-                echo "Master order updated - layout reapplied"
-            else
-                echo "Warning: One or both windows not found in window list"
-            fi
-        else
-            echo "Cannot swap windows: both windows must be on the current workspace"
-            echo "Window 1 workspace: $window1_workspace, Window 2 workspace: $window2_workspace, Current: $current_workspace"
-        fi
-    else
-        echo "Cannot swap windows on different monitors"
-        echo "Window 1 monitor: $monitor1"
-        echo "Window 2 monitor: $monitor2"
-    fi
-}
-
-# Cycle window positions clockwise (current monitor only) - stateless geometry swap
-cycle_window_positions() {
-    # Stateless cycle: snapshot geometries → rotate → apply back
-    local ws mon_name
-    ws="$(get_current_workspace)"
-    IFS=':' read -r mon_name _ <<< "$(get_current_monitor)"
-
-    # 1) Determine ordering (spatial feels natural)
-    mapfile -t WIDS < <(order_windows_spatial_on_monitor "$ws" "$mon_name")
-    local n="${#WIDS[@]}"; (( n < 2 )) && { echo "Nothing to cycle"; return 0; }
-
-    # 2) Snapshot geometries
-    local GEOMS=()
-    for id in "${WIDS[@]}"; do
-        GEOMS+=("$(get_window_geometry "$id")")  # "x:y:w:h"
-    done
-
-    # 3) Rotate geometries right by one (C A B)
-    local last="${GEOMS[-1]}"; unset 'GEOMS[-1]'; GEOMS=("$last" "${GEOMS[@]}")
-
-    # 4) Apply back
-    for i in "${!WIDS[@]}"; do
-        IFS=':' read -r gx gy gw gh <<< "${GEOMS[$i]}"
-        place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
-    done
-
-    # Prevent the monitor loop from immediately relayouting
-    hold_now "$ws" "$mon_name" 900
-    cooldown_now 600
-
-    echo "Cycled ${#WIDS[@]} window(s) by swapping geometries."
-}
-
-# Reverse cycle window positions (counter-clockwise, current monitor only)
-reverse_cycle_window_positions() {
-    # Stateless reverse: rotate geometries left by one (A B C → B C A)
-    local ws mon_name
-    ws="$(get_current_workspace)"
-    IFS=':' read -r mon_name _ <<< "$(get_current_monitor)"
-
-    mapfile -t WIDS < <(order_windows_spatial_on_monitor "$ws" "$mon_name")
-    local n="${#WIDS[@]}"; (( n < 2 )) && { echo "Nothing to cycle"; return 0; }
-
-    local GEOMS=()
-    for id in "${WIDS[@]}"; do
-        GEOMS+=("$(get_window_geometry "$id")")
-    done
-
-    # rotate left by one
-    local first="${GEOMS[0]}"; GEOMS=("${GEOMS[@]:1}" "$first")
-
-    for i in "${!WIDS[@]}"; do
-        IFS=':' read -r gx gy gw gh <<< "${GEOMS[$i]}"
-        place_window_geometry "${WIDS[$i]}" "$gx" "$gy" "$gw" "$gh"
-    done
-
-    hold_now "$ws" "$mon_name" 900
-    cooldown_now 600
-    echo "Reverse-cycled ${#WIDS[@]} window(s) by swapping geometries."
-}
+# Window operation functions moved to windows.sh:
+# - focus_window()
+# - swap_window_positions()
+# - cycle_window_positions()
+# - reverse_cycle_window_positions()
 
 #========================================
 # AUTO-LAYOUT AND META FUNCTIONS
@@ -1474,7 +1137,7 @@ auto_layout_and_reset_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows_on_monitor_by_creation "$monitor" "$workspace")
+    done < <(get_visible_windows "$monitor")
     
     # Apply fresh auto-layout
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
@@ -1490,28 +1153,12 @@ reapply_saved_layout_for_monitor() {
     
     IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
     
-    # Get window list directly from persistent storage and validate
+    # Get current windows on this monitor
     local master_windows=()
-    local window_list=$(get_window_list "$workspace" "$monitor_name")
+    local window_list
+    window_list=$(get_visible_windows "$monitor_name")
     if [[ -n "$window_list" ]]; then
-        local all_windows=()
-        read -ra all_windows <<< "$window_list"
-        
-        # Filter out dead windows
-        for window_id in "${all_windows[@]}"; do
-            if [[ -n "$window_id" ]] && xdotool getwindowgeometry "$window_id" >/dev/null 2>&1; then
-                local window_desktop=$(wmctrl -l 2>/dev/null | grep "^$window_id " | awk '{print $2}')
-                if [[ "$window_desktop" == "$workspace" || "$window_desktop" == "-1" ]]; then
-                    master_windows+=("$window_id")
-                fi
-            fi
-        done
-        
-        # Update the persistent list if we removed dead windows
-        if [[ ${#master_windows[@]} -ne ${#all_windows[@]} ]]; then
-            set_window_list "$workspace" "$monitor_name" "${master_windows[*]}"
-            echo "Cleaned up $(( ${#all_windows[@]} - ${#master_windows[@]} )) dead window(s) from persistent list"
-        fi
+        readarray -t master_windows <<< "$window_list"
     fi
     
     if [[ ${#master_windows[@]} -gt 0 ]]; then
@@ -1564,11 +1211,12 @@ auto_layout_all_monitors() {
     for monitor in "${MONITORS[@]}"; do
         IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
         
-        # Get windows from persistent list (respects swap/cycle order)
-        local current_list=$(get_window_list "$workspace" "$monitor_name")
+        # Get current windows on this monitor
         local windows_on_monitor=()
-        if [[ -n "$current_list" ]]; then
-            read -ra windows_on_monitor <<< "$current_list"
+        local window_list
+        window_list=$(get_visible_windows "$monitor_name")
+        if [[ -n "$window_list" ]]; then
+            readarray -t windows_on_monitor <<< "$window_list"
         fi
         
         # Apply layout to this monitor
