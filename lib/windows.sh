@@ -11,7 +11,7 @@ pick_window() {
     xdotool selectwindow
 }
 
-# Get current window geometry
+# Get current window geometry (frame coordinates)
 get_window_geometry() {
     local id="$1"
     xwininfo -id "$id" | awk '
@@ -21,6 +21,41 @@ get_window_geometry() {
         /Height:/ {h=$NF}
         END {print x","y","w","h}
     '
+}
+
+# --- Frame extents: left,right,top,bottom (defaults to 0s if missing) ---
+get_frame_extents() {  # $1: window id
+    local id="$1"
+    local ext
+    ext=$(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null | awk -F' = ' '{print $2}')
+    if [[ -n "$ext" ]]; then
+        echo "$ext" | awk -F', ' '{print $1","$2","$3","$4}'
+    else
+        echo "0,0,0,0"
+    fi
+}
+
+# --- Read CLIENT geometry consistently as x,y,w,h ---
+get_window_client_geometry() {  # $1: window id -> "x,y,w,h"
+    local id="$1"
+    local info x y w h
+    info=$(xwininfo -id "$id")
+    x=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info")
+    y=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info")
+    w=$(awk '/Width:/ {print $NF}' <<<"$info")
+    h=$(awk '/Height:/ {print $NF}' <<<"$info")
+
+    local L R T B
+    IFS=',' read -r L R T B <<<"$(get_frame_extents "$id")"
+
+    # Convert frame (outer) position to client (inner) position
+    echo "$((x + L)),$((y + T)),$w,$h"
+}
+
+# --- Apply CLIENT geometry directly ---
+place_window_client_geometry() {  # $1:id $2:x $3:y $4:w $5:h
+    local id="$1" x="$2" y="$3" w="$4" h="$5"
+    wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}" 2>/dev/null
 }
 
 # Apply geometry to window
@@ -40,7 +75,7 @@ move_to_workspace() {
 # Save window position to presets
 save_position() {
     local name="$1" id="$2"
-    local geom=$(get_window_geometry "$id")
+    local geom=$(get_window_client_geometry "$id")   # ← use client geometry
     
     # Remove existing entry if exists
     grep -v "^${name}=" "$PRESETS_FILE" > "${PRESETS_FILE}.tmp" || true
@@ -64,7 +99,7 @@ load_position() {
     fi
     
     IFS=',' read -r x y w h <<< "$geom"
-    apply_geometry "$id" "$x" "$y" "$w" "$h"
+    place_window_client_geometry "$id" "$x" "$y" "$w" "$h"   # ← ensure client apply
 }
 
 # Get all visible windows on current desktop
@@ -567,22 +602,21 @@ swap_window_positions() {
             
             local monitor_name=$(echo "$monitor1" | cut -d':' -f1)
             
-            # Get current geometries
-            local window1_geometry=$(get_window_geometry "$window1")
-            local window2_geometry=$(get_window_geometry "$window2")
+            # Swap CLIENT geometries
+            local g1 g2 x1 y1 w1 h1 x2 y2 w2 h2
+            g1=$(get_window_client_geometry "$window1")
+            g2=$(get_window_client_geometry "$window2")
             
-            if [[ -n "$window1_geometry" && -n "$window2_geometry" ]]; then
-                # Parse geometries
-                IFS=' ' read -r x1 y1 w1 h1 <<< "$window1_geometry"
-                IFS=' ' read -r x2 y2 w2 h2 <<< "$window2_geometry"
+            if [[ -n "$g1" && -n "$g2" ]]; then
+                IFS=',' read -r x1 y1 w1 h1 <<<"$g1"
+                IFS=',' read -r x2 y2 w2 h2 <<<"$g2"
+
+                place_window_client_geometry "$window1" "$x2" "$y2" "$w2" "$h2"
+                place_window_client_geometry "$window2" "$x1" "$y1" "$w1" "$h1"
+
+                echo "Swapped client geometries of $window1 and $window2"
                 
-                # Swap positions (keep original sizes)
-                apply_geometry "$window1" "$x2" "$y2" "$w1" "$h1"
-                apply_geometry "$window2" "$x1" "$y1" "$w2" "$h2"
-                
-                echo "Swapped positions of windows $window1 and $window2"
-                
-                echo "Window positions have been swapped successfully"
+                echo "Window geometries have been swapped successfully"
             else
                 echo "Warning: Could not get geometry for one or both windows"
             fi
@@ -599,19 +633,16 @@ swap_window_positions() {
 
 # Helper function to swap two windows' geometries directly
 swap_window_geometries() {
-    local window1="$1"
-    local window2="$2"
-    
-    # Get both geometries
-    local geom1=$(get_window_geometry "$window1")
-    local geom2=$(get_window_geometry "$window2")
-    
-    # Swap them
-    IFS=',' read -r x2 y2 w2 h2 <<< "$geom2"
-    IFS=',' read -r x1 y1 w1 h1 <<< "$geom1"
-    
-    place_window_geometry "$window1" "$x2" "$y2" "$w2" "$h2"
-    place_window_geometry "$window2" "$x1" "$y1" "$w1" "$h1"
+    local window1="$1" window2="$2"
+
+    local g1 g2 x1 y1 w1 h1 x2 y2 w2 h2
+    g1=$(get_window_client_geometry "$window1")
+    g2=$(get_window_client_geometry "$window2")
+    IFS=',' read -r x1 y1 w1 h1 <<<"$g1"
+    IFS=',' read -r x2 y2 w2 h2 <<<"$g2"
+
+    place_window_client_geometry "$window1" "$x2" "$y2" "$w2" "$h2"
+    place_window_client_geometry "$window2" "$x1" "$y1" "$w1" "$h1"
 }
 
 # Cycle window positions clockwise (current monitor only) - using serial swaps
