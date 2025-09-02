@@ -87,11 +87,11 @@ _get_client_geom() {  # id -> "x,y,w,h"
 # ----- Detect how wmctrl -e interprets X/Y on this WM -----
 # Caches in WMCTRL_COORD_MODE: "frame" or "client"
 detect_wmctrl_coord_mode() {
-    [[ -n "$WMCTRL_COORD_MODE" ]] && return 0
+    [[ -n "${WMCTRL_COORD_MODE:-}" ]] && return 0
     # Pick the currently active window
     local active
     active=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk -F'# ' '{print $2}')
-    [[ -z "$active" ]] && { WMCTRL_COORD_MODE="frame"; return 0; }
+    [[ -z "$active" ]] && { export WMCTRL_COORD_MODE="frame"; return 0; }
 
     # Baselines
     local fx fy fw fh cx cy cw ch
@@ -106,7 +106,7 @@ detect_wmctrl_coord_mode() {
     IFS=',' read -r nfx nfy _ _ <<<"$(get_window_frame_geometry_wmctrl "$active")"
 
     if [[ "$nfx" == "$fx" && "$nfy" == "$fy" ]]; then
-        WMCTRL_COORD_MODE="frame"
+        export WMCTRL_COORD_MODE="frame"
     else
         # Try no-op using CLIENT coords
         _apply_with_wmctrl "$active" "$cx" "$cy" "$cw" "$ch"
@@ -115,9 +115,9 @@ detect_wmctrl_coord_mode() {
         # If moving to client coords is a no-op, wmctrl wants client
         if [[ "$nfx" == "$fx" && "$nfy" == "$fy" ]]; then
             # Some WMs still end up identical; prefer client if first try shifted
-            WMCTRL_COORD_MODE="client"
+            export WMCTRL_COORD_MODE="client"
         else
-            WMCTRL_COORD_MODE="client"
+            export WMCTRL_COORD_MODE="client"
         fi
     fi
 }
