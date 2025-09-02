@@ -650,9 +650,9 @@ cycle_window_positions() {
     # Get current context
     get_current_context
     
-    # Get windows using configured ordering
+    # Get windows using spatial ordering (top→bottom, then left→right)
     local windows=()
-    mapfile -t windows < <(get_visible_windows "$CURRENT_MONITOR_NAME")
+    mapfile -t windows < <(get_visible_windows_by_position "$CURRENT_MONITOR_NAME")
     local n="${#windows[@]}"
     
     if (( n < 2 )); then
@@ -661,8 +661,8 @@ cycle_window_positions() {
     fi
 
     # For clockwise cycle (A B C → C A B):
-    # We swap pairs starting from the end
-    for (( i = n - 1; i > 0; i-- )); do
+    # We swap pairs starting from position 1
+    for (( i = 1; i < n; i++ )); do
         swap_window_geometries "${windows[0]}" "${windows[$i]}"
     done
 
@@ -675,9 +675,9 @@ reverse_cycle_window_positions() {
     # Get current context
     get_current_context
     
-    # Get windows using configured ordering
+    # Get windows using spatial ordering (top→bottom, then left→right)
     local windows=()
-    mapfile -t windows < <(get_visible_windows "$CURRENT_MONITOR_NAME")
+    mapfile -t windows < <(get_visible_windows_by_position "$CURRENT_MONITOR_NAME")
     local n="${#windows[@]}"
     
     if (( n < 2 )); then
@@ -686,8 +686,8 @@ reverse_cycle_window_positions() {
     fi
 
     # For counter-clockwise cycle (A B C → B C A):
-    # We swap pairs starting from the beginning
-    for (( i = 1; i < n; i++ )); do
+    # We swap pairs starting from the end
+    for (( i = n - 1; i > 0; i-- )); do
         swap_window_geometries "${windows[0]}" "${windows[$i]}"
     done
 
