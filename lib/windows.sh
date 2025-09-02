@@ -335,7 +335,9 @@ focus_window() {
         return 1
     fi
     
-    local windows=($(get_windows_ordered))
+    # Get current monitor for the active window
+    get_current_context
+    local windows=($(get_windows_ordered "$CURRENT_MONITOR_NAME"))
     local count=${#windows[@]}
     
     if [[ $count -le 1 ]]; then
@@ -441,8 +443,10 @@ find_adjacent_windows() {
     local target_geom=$(get_window_geometry "$target_id")
     IFS=',' read -r tx ty tw th <<< "$target_geom"
     
+    # Get current monitor for the target window
+    get_current_context
     local adjacent=()
-    local windows=($(get_windows_ordered))
+    local windows=($(get_windows_ordered "$CURRENT_MONITOR_NAME"))
     
     for id in "${windows[@]}"; do
         [[ "$id" == "$target_id" ]] && continue
@@ -496,9 +500,11 @@ minimize_others() {
     local active_title=$(xdotool getwindowname "$active_id" 2>/dev/null || echo "Window $active_id")
     echo "Active window ID: $active_id ($active_title)"
     
+    # Get current monitor for the active window  
+    get_current_context
     local minimized_count=0
     local kept_count=0
-    local visible_windows=($(get_windows_ordered))
+    local visible_windows=($(get_windows_ordered "$CURRENT_MONITOR_NAME"))
     
     echo "Found ${#visible_windows[@]} visible windows to process"
     
@@ -650,9 +656,9 @@ cycle_window_positions() {
     # Get current context
     get_current_context
     
-    # Get windows using spatial ordering (top→bottom, then left→right)
+    # Get windows using configured ordering strategy (defaults to spatial)
     local windows=()
-    mapfile -t windows < <(get_visible_windows_by_position "$CURRENT_MONITOR_NAME")
+    mapfile -t windows < <(get_windows_ordered "$CURRENT_MONITOR_NAME")
     local n="${#windows[@]}"
     
     if (( n < 2 )); then
@@ -675,9 +681,9 @@ reverse_cycle_window_positions() {
     # Get current context
     get_current_context
     
-    # Get windows using spatial ordering (top→bottom, then left→right)
+    # Get windows using configured ordering strategy (defaults to spatial)
     local windows=()
-    mapfile -t windows < <(get_visible_windows_by_position "$CURRENT_MONITOR_NAME")
+    mapfile -t windows < <(get_windows_ordered "$CURRENT_MONITOR_NAME")
     local n="${#windows[@]}"
     
     if (( n < 2 )); then
@@ -756,21 +762,22 @@ WINDOW_ORDER_STRATEGY="${WINDOW_ORDER_STRATEGY:-position}"
 
 # Get windows using the configured ordering strategy
 get_windows_ordered() {
-    local strategy="${1:-$WINDOW_ORDER_STRATEGY}"
+    local monitor_name="${1:-}"  # Optional monitor filter
+    local strategy="${2:-$WINDOW_ORDER_STRATEGY}"
     
     case "$strategy" in
         position|spatial)
-            get_visible_windows_by_position
+            get_visible_windows_by_position "$monitor_name"
             ;;
         creation|chronological)
-            get_visible_windows
+            get_visible_windows "$monitor_name"
             ;;
         stacking|focus)
-            get_visible_windows_by_stacking
+            get_visible_windows_by_stacking "$monitor_name"
             ;;
         *)
             echo "Warning: Unknown window ordering strategy '$strategy', defaulting to position" >&2
-            get_visible_windows_by_position
+            get_visible_windows_by_position "$monitor_name"
             ;;
     esac
 }
