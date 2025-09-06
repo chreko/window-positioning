@@ -72,8 +72,8 @@ WINDOW_ORDER_STRATEGY=position
 #   cs:Settings - Settings windows (exact match)
 #   *Preferences - Preference dialogs
 #   Application Finder - XFCE app finder
-#   Save*, Open* - File dialogs
-IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,*Preferences,Application Finder"
+#   Save*, Open*, Save As* - File dialogs
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,*Preferences,Application Finder,cs:Save As,cs:Save Changes"
 EOF
     fi
 

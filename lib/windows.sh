@@ -834,8 +834,15 @@ cycle_window_positions() {
         wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
     done
     
-    # After rotation, reapply the current layout to maintain proper positioning
-    if declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
+    # After rotation, check if we should reapply layout
+    # Skip reapplying for master layouts that have specific window role assignments
+    # as rotation is intended to change which window has which role
+    local current_layout=$(get_workspace_monitor_layout "$CURRENT_WS" "$CURRENT_MONITOR_NAME" "" "")
+    if [[ -n "$current_layout" && "$current_layout" =~ ^master[[:space:]] ]]; then
+        echo "Skipping layout reapplication for master layout to preserve rotation"
+        # Set a brief hold to prevent daemon from immediately reapplying
+        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
+    elif declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
         sleep 0.1  # Brief delay for window movements to complete
         reapply_saved_layout_for_monitor "$CURRENT_WS" "$CURRENT_MONITOR"
     fi
@@ -872,8 +879,15 @@ reverse_cycle_window_positions() {
         wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
     done
     
-    # After rotation, reapply the current layout to maintain proper positioning
-    if declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
+    # After rotation, check if we should reapply layout
+    # Skip reapplying for master layouts that have specific window role assignments
+    # as rotation is intended to change which window has which role
+    local current_layout=$(get_workspace_monitor_layout "$CURRENT_WS" "$CURRENT_MONITOR_NAME" "" "")
+    if [[ -n "$current_layout" && "$current_layout" =~ ^master[[:space:]] ]]; then
+        echo "Skipping layout reapplication for master layout to preserve rotation"
+        # Set a brief hold to prevent daemon from immediately reapplying
+        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
+    elif declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
         sleep 0.1  # Brief delay for window movements to complete
         reapply_saved_layout_for_monitor "$CURRENT_WS" "$CURRENT_MONITOR"
     fi
