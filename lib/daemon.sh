@@ -207,7 +207,7 @@ get_current_master_state() {
         
         # Get window list for this monitor (current workspace only)
         local master_list
-        master_list=$(get_visible_windows "$monitor_name")
+        master_list=$(get_windows_ordered "$monitor_name")
         
         # Validate that all windows in the list are actually on current workspace
         local validated_list=""
@@ -462,7 +462,7 @@ reconcile_ws_mon() {  # args: workspace monitor_name
     
     # Get current windows
     local current_windows
-    current_windows="$(get_visible_windows "$mon")"
+    current_windows="$(get_windows_ordered "$mon")"
     local current_count
     current_count=$(echo "$current_windows" | grep -c . 2>/dev/null || echo 0)
     
@@ -613,7 +613,7 @@ master_stack_layout_current_monitor() {
     # Get windows using live snapshot with configured ordering strategy
     IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
     local windows_on_monitor=()
-    mapfile -t windows_on_monitor < <(get_visible_windows "$monitor_name")
+    mapfile -t windows_on_monitor < <(get_windows_ordered "$monitor_name")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -662,7 +662,7 @@ master_stack_layout() {
     for monitor in "${MONITORS[@]}"; do
         # Get windows from persistent list for this monitor
         IFS=':' read -r name mx my mw mh <<< "$monitor"
-        local current_list=$(get_visible_windows "$name")
+        local current_list=$(get_windows_ordered "$name")
         local windows_on_monitor=()
         if [[ -n "$current_list" ]]; then
             read -ra windows_on_monitor <<< "$current_list"
@@ -713,7 +713,7 @@ center_master_layout_current_monitor() {
     # Get windows using live snapshot with configured ordering strategy
     IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
     local windows_on_monitor=()
-    mapfile -t windows_on_monitor < <(get_visible_windows "$monitor_name")
+    mapfile -t windows_on_monitor < <(get_windows_ordered "$monitor_name")
     
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
@@ -1137,7 +1137,7 @@ auto_layout_and_reset_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_visible_windows "$monitor")
+    done < <(get_windows_ordered "$monitor_name")
     
     # Apply fresh auto-layout
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
@@ -1156,7 +1156,7 @@ reapply_saved_layout_for_monitor() {
     # Get current windows on this monitor
     local master_windows=()
     local window_list
-    window_list=$(get_visible_windows "$monitor_name")
+    window_list=$(get_windows_ordered "$monitor_name")
     if [[ -n "$window_list" ]]; then
         readarray -t master_windows <<< "$window_list"
     fi
@@ -1214,7 +1214,7 @@ auto_layout_all_monitors() {
         # Get current windows on this monitor
         local windows_on_monitor=()
         local window_list
-        window_list=$(get_visible_windows "$monitor_name")
+        window_list=$(get_windows_ordered "$monitor_name")
         if [[ -n "$window_list" ]]; then
             readarray -t windows_on_monitor <<< "$window_list"
         fi
