@@ -199,14 +199,16 @@ get_visible_windows() {
         
         # Skip ignored applications from config
         local class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
-        if [[ -n "$IGNORED_APPS" && -n "$class" ]]; then
-            # Convert comma-separated list to array
-            IFS=',' read -ra ignored_array <<< "$IGNORED_APPS"
+        local title=$(xprop -id "$id" _NET_WM_NAME 2>/dev/null || xprop -id "$id" WM_NAME 2>/dev/null)
+        if [[ -n "$IGNORED_APPS" && (-n "$class" || -n "$title") ]]; then
+            # Convert comma-separated list to array (zsh/bash compatible)
+            local IFS=','
+            local ignored_array=($IGNORED_APPS)
             local should_skip=false
             for app in "${ignored_array[@]}"; do
                 # Trim whitespace and check case-insensitive match
                 app=$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                if echo "$class" | grep -qi "$app"; then
+                if [[ -n "$app" ]] && (echo "$class" | grep -qi "$app" || echo "$title" | grep -qi "$app"); then
                     should_skip=true
                     break
                 fi
