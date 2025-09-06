@@ -803,35 +803,80 @@ swap_window_geometries() {
 }
 
 cycle_window_positions() {
-    # Prevent the daemon from immediately reapplying a saved layout.
+    # Get current context
     get_current_context
-    if declare -f hold_now >/dev/null 2>&1; then
-        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
-    fi
-
+    
     mapfile -t windows < <(get_windows_ordered)
     local n=${#windows[@]}
     echo "DEBUG: Found ${n} windows to cycle" >&2
     (( n < 2 )) && { echo "DEBUG: Not enough windows to cycle (need at least 2)" >&2; return 0; }
-    # Clockwise: A B C -> C A B
-    for (( i = 1; i < n; i++ )); do
-        swap_window_geometries "${windows[0]}" "${windows[$i]}"
+    
+    # Store all window geometries
+    local geometries=()
+    for window in "${windows[@]}"; do
+        geometries+=("$(get_window_geometry "$window")")
     done
+    
+    # Clockwise rotation: each window takes the position of the next window
+    # A B C -> C A B: window[0] -> position[1], window[1] -> position[2], window[2] -> position[0]
+    for (( i = 0; i < n; i++ )); do
+        local target_pos=$(( (i + 1) % n ))
+        local geom="${geometries[$target_pos]}"
+        IFS=',' read -r x y w h <<< "$geom"
+        
+        # Get frame extents for coordinate conversion
+        local L R T B
+        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+        L=${L:-0}; T=${T:-0}
+        
+        # Convert to wmctrl coordinates and position window
+        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
+    done
+    
+    # After rotation, reapply the current layout to maintain proper positioning
+    if declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
+        sleep 0.1  # Brief delay for window movements to complete
+        reapply_saved_layout_for_monitor "$CURRENT_WS" "$CURRENT_MONITOR"
+    fi
 }
 
 reverse_cycle_window_positions() {
+    # Get current context
     get_current_context
-    if declare -f hold_now >/dev/null 2>&1; then
-        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
-    fi
-
+    
     mapfile -t windows < <(get_windows_ordered)
     local n=${#windows[@]}
     (( n < 2 )) && return 0
-    # Counter-clockwise: A B C -> B C A
-    for (( i = n - 1; i > 0; i-- )); do
-        swap_window_geometries "${windows[0]}" "${windows[$i]}"
+    
+    # Store all window geometries
+    local geometries=()
+    for window in "${windows[@]}"; do
+        geometries+=("$(get_window_geometry "$window")")
     done
+    
+    # Counter-clockwise rotation: each window takes the position of the previous window
+    # A B C -> B C A: window[0] -> position[2], window[1] -> position[0], window[2] -> position[1]
+    for (( i = 0; i < n; i++ )); do
+        local target_pos=$(( (i - 1 + n) % n ))
+        local geom="${geometries[$target_pos]}"
+        IFS=',' read -r x y w h <<< "$geom"
+        
+        # Get frame extents for coordinate conversion
+        local L R T B
+        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+        L=${L:-0}; T=${T:-0}
+        
+        # Convert to wmctrl coordinates and position window
+        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
+    done
+    
+    # After rotation, reapply the current layout to maintain proper positioning
+    if declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
+        sleep 0.1  # Brief delay for window movements to complete
+        reapply_saved_layout_for_monitor "$CURRENT_WS" "$CURRENT_MONITOR"
+    fi
 }
 
 #========================================
