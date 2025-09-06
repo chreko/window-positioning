@@ -198,17 +198,50 @@ get_visible_windows() {
         fi
         
         # Skip ignored applications from config
-        local class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
-        local title=$(xprop -id "$id" _NET_WM_NAME 2>/dev/null || xprop -id "$id" WM_NAME 2>/dev/null)
+        local class=$(xprop -id "$id" WM_CLASS 2>/dev/null | sed -n 's/.*= \(.*\)/\1/p' | tr -d '"')
+        local title=$(xprop -id "$id" _NET_WM_NAME 2>/dev/null | sed -n 's/.*= "\(.*\)"/\1/p')
+        [[ -z "$title" ]] && title=$(xprop -id "$id" WM_NAME 2>/dev/null | sed -n 's/.*= "\(.*\)"/\1/p')
         if [[ -n "$IGNORED_APPS" && (-n "$class" || -n "$title") ]]; then
             # Convert comma-separated list to array (zsh/bash compatible)
             local IFS=','
             local ignored_array=($IGNORED_APPS)
             local should_skip=false
             for app in "${ignored_array[@]}"; do
-                # Trim whitespace and check case-insensitive match
+                # Trim whitespace
                 app=$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                if [[ -n "$app" ]] && (echo "$class" | grep -qi "$app" || echo "$title" | grep -qi "$app"); then
+                [[ -z "$app" ]] && continue
+                
+                # Check for case-sensitive prefix
+                local case_sensitive=false
+                if [[ "$app" == cs:* ]]; then
+                    case_sensitive=true
+                    app="${app#cs:}"
+                fi
+                
+                # Convert wildcards (* and ?) to regex patterns
+                local pattern="$app"
+                # Escape special regex characters except * and ?
+                pattern=$(echo "$pattern" | sed 's/\([[\\.^$()+{}|]\)/\\\1/g')
+                # Now convert wildcards
+                pattern=$(echo "$pattern" | sed 's/\*/\.\*/g; s/\?/\./g')
+                # If no wildcards present, make it an exact match with anchors
+                if [[ "$app" != *"*"* && "$app" != *"?"* ]]; then
+                    pattern="^${pattern}$"
+                fi
+                
+                # Apply case sensitivity and check both class and title
+                local match=false
+                if [[ "$case_sensitive" == true ]]; then
+                    if echo "$class" | grep -q "$pattern" || echo "$title" | grep -q "$pattern"; then
+                        match=true
+                    fi
+                else
+                    if echo "$class" | grep -qi "$pattern" || echo "$title" | grep -qi "$pattern"; then
+                        match=true
+                    fi
+                fi
+                
+                if [[ "$match" == true ]]; then
                     should_skip=true
                     break
                 fi

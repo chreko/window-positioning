@@ -62,8 +62,9 @@ WINDOW_ORDER_STRATEGY=position
 
 # Ignored applications (comma-separated list)
 # These applications will not be included in auto-layout positioning
-# Matches against WM_CLASS property (case-insensitive)
-IGNORED_APPS="ulauncher,warning,password,settings"
+# Matches against WM_CLASS and window title
+# Supports wildcards (*,?) and case-sensitive prefix (cs:)
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Password Required*,cs:Settings"
 EOF
     fi
 
@@ -103,7 +104,6 @@ load_config() {
     export WINDOW_ORDER_STRATEGY
     
     # Ignored applications (comma-separated list)
-    IGNORED_APPS=${IGNORED_APPS:-"ulauncher,warning,password,settings"}
     export IGNORED_APPS
 }
 
