@@ -8,9 +8,32 @@ INSTALL_BIN_DIR="/usr/local/bin"
 INSTALL_LIB_DIR="/usr/local/lib/place-window"
 
 # Get the real user (not root when using sudo)
-REAL_USER="${SUDO_USER:-$USER}"
+# If SUDO_USER is set, use that; otherwise try to detect the real user
+if [[ -n "${SUDO_USER:-}" ]]; then
+    REAL_USER="$SUDO_USER"
+elif [[ "$USER" == "root" ]]; then
+    # If we're root but no SUDO_USER, try to find the real user from the environment
+    REAL_USER=$(logname 2>/dev/null || who am i | awk '{print $1}' | head -1 || echo "user")
+else
+    REAL_USER="$USER"
+fi
+
 REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+
+# Safety check: never install to root's home
+if [[ "$REAL_HOME" == "/root" ]]; then
+    echo "ERROR: Detected root home directory. This should install to a regular user."
+    echo "Please run as: sudo -E ./install.sh"
+    echo "Or specify the target user manually."
+    exit 1
+fi
+
 CONFIG_DIR="${REAL_HOME}/.config/window-positioning"
+
+# Debug information
+echo "Debug: USER=$USER, SUDO_USER=${SUDO_USER:-'not set'}, REAL_USER=$REAL_USER"
+echo "Debug: HOME=$HOME, REAL_HOME=$REAL_HOME"
+echo "Debug: CONFIG_DIR will be: $CONFIG_DIR"
 
 echo "Window Positioning Tool Installer for Qubes OS dom0"
 echo "=================================================="
@@ -117,11 +140,19 @@ mkdir -p "$CONFIG_DIR"
 chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR" 2>/dev/null || true
 
 # Create configuration files using config.sh (single source of truth)
-# Source the config functions
-source "$INSTALL_LIB_DIR/config.sh"
+# Set our variables BEFORE sourcing config.sh to prevent override
+export CONFIG_DIR="$CONFIG_DIR"  # Use the installer's CONFIG_DIR (set to REAL_USER's home)
+export PRESETS_FILE="${CONFIG_DIR}/presets.conf"
+export SETTINGS_FILE="${CONFIG_DIR}/settings.conf"
+export WORKSPACE_STATE_FILE="${CONFIG_DIR}/workspace-state.conf"
 
-# Set environment for config creation
-export CONFIG_DIR PRESETS_FILE SETTINGS_FILE
+echo "Debug: Before sourcing config.sh - CONFIG_DIR=$CONFIG_DIR, PRESETS_FILE=$PRESETS_FILE"
+
+# Now source the config functions (without letting it override our variables)
+# We need to modify how we source it to avoid the variable assignments
+source <(grep -v '^CONFIG_DIR=' "$INSTALL_LIB_DIR/config.sh" | grep -v '^PRESETS_FILE=' | grep -v '^SETTINGS_FILE=' | grep -v '^WORKSPACE_STATE_FILE=')
+
+echo "Debug: After sourcing config.sh - CONFIG_DIR=$CONFIG_DIR, PRESETS_FILE=$PRESETS_FILE"
 
 # Initialize configuration files
 init_config
@@ -132,6 +163,7 @@ echo "✓ Configuration files created/verified"
 
 
 # Create keyboard shortcut helper
+echo "Debug: Creating keyboard shortcuts at: $CONFIG_DIR/keyboard-shortcuts.txt"
 cat > "$CONFIG_DIR/keyboard-shortcuts.txt" << 'EOF'
 Suggested XFCE Keyboard Shortcuts
 ================================
@@ -228,7 +260,11 @@ chown "$REAL_USER:$REAL_USER" "$AUTOSTART_DIR/window-positioning.desktop" 2>/dev
 echo "✓ Installed XDG autostart service"
 
 # Create uninstaller
-cat > "$CONFIG_DIR/uninstall.sh" << EOF
+echo "Debug: Creating uninstaller at: $CONFIG_DIR/uninstall.sh"
+echo "Debug: CONFIG_DIR permissions: $(ls -ld "$CONFIG_DIR" 2>/dev/null || echo 'directory not found')"
+
+# Create uninstaller with explicit error checking
+if ! cat > "$CONFIG_DIR/uninstall.sh" << EOF
 #!/usr/bin/env bash
 # Uninstaller for window positioning tool
 
@@ -241,18 +277,18 @@ if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
 fi
 
 # Remove XDG autostart file
-rm -f "$AUTOSTART_DIR/window-positioning.desktop"
+rm -f "${REAL_HOME}/.config/autostart/window-positioning.desktop"
 echo "✓ Removed XDG autostart service"
 
-sudo rm -f "$INSTALL_BIN_DIR/place-window"
-echo "✓ Removed script from $INSTALL_BIN_DIR"
+sudo rm -f "${INSTALL_BIN_DIR}/place-window"
+echo "✓ Removed script from ${INSTALL_BIN_DIR}"
 
-sudo rm -rf "$INSTALL_LIB_DIR"
-echo "✓ Removed library modules from $INSTALL_LIB_DIR"
+sudo rm -rf "${INSTALL_LIB_DIR}"
+echo "✓ Removed library modules from ${INSTALL_LIB_DIR}"
 
-read -p "Also remove configuration directory $CONFIG_DIR? [y/N]: " confirm
+read -p "Also remove configuration directory ${CONFIG_DIR}? [y/N]: " confirm
 if [[ "\$confirm" == [yY] ]]; then
-    rm -rf "$CONFIG_DIR"
+    rm -rf "${CONFIG_DIR}"
     echo "✓ Removed configuration directory"
 else
     echo "✓ Configuration directory preserved"
@@ -260,9 +296,26 @@ fi
 
 echo "Uninstallation complete."
 EOF
+then
+    echo "ERROR: Failed to create uninstaller at $CONFIG_DIR/uninstall.sh"
+    echo "Check directory permissions and try again"
+    exit 1
+fi
 
-chmod +x "$CONFIG_DIR/uninstall.sh"
+if ! chmod +x "$CONFIG_DIR/uninstall.sh"; then
+    echo "ERROR: Failed to make uninstaller executable"
+    exit 1
+fi
+
 chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/uninstall.sh" 2>/dev/null || true
+echo "✓ Created uninstaller at $CONFIG_DIR/uninstall.sh"
+
+# Verify the file was actually created
+if [[ -f "$CONFIG_DIR/uninstall.sh" ]]; then
+    echo "✓ Verified uninstaller exists: $(ls -la "$CONFIG_DIR/uninstall.sh")"
+else
+    echo "ERROR: Uninstaller file not found after creation!"
+fi
 
 echo ""
 echo "Installation Complete!"
