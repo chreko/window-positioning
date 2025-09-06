@@ -116,110 +116,20 @@ echo "Config directory: $CONFIG_DIR"
 mkdir -p "$CONFIG_DIR"
 chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR" 2>/dev/null || true
 
-# Create settings configuration
-if [[ ! -f "$CONFIG_DIR/settings.conf" ]]; then
-    cat > "$CONFIG_DIR/settings.conf" << 'EOF'
-# Window positioning settings
-# Gap around windows (in pixels)
-GAP=10
+# Create configuration files using config.sh (single source of truth)
+# Source the config functions
+source "$INSTALL_LIB_DIR/config.sh"
 
-# Panel height (adjust for your XFCE theme)
-# Set to 0 if panel auto-hides or doesn't reserve space
-PANEL_HEIGHT=32
+# Set environment for config creation
+export CONFIG_DIR PRESETS_FILE SETTINGS_FILE
 
-# Panel auto-hide mode
-# Set to true if panel is set to auto-hide (intelligently or always)
-# When true, panel height is ignored for layout calculations
-PANEL_AUTOHIDE=false
+# Initialize configuration files
+init_config
 
-# Window decoration dimensions (in pixels)
-# Height: title bar height - set to 0 if windows don't have title bars
-DECORATION_HEIGHT=30
+# Fix ownership after config creation
+chown -R "$REAL_USER:$REAL_USER" "$CONFIG_DIR" 2>/dev/null || true
+echo "✓ Configuration files created/verified"
 
-# Width: side border width (left + right combined) - usually 0 for modern themes  
-DECORATION_WIDTH=2
-
-# Minimum window size
-MIN_WIDTH=400
-MIN_HEIGHT=300
-
-# Auto-layout preferences
-# Available layouts for each window count:
-# 1 window: maximize
-# 2 windows: equal, primary-secondary, secondary-primary
-# 3 windows: main-two-side, three-columns, center-sidebars
-# 4 windows: grid, main-three-side, three-top-bottom
-# 5 windows: center-corners, two-three-columns, grid-wide-bottom
-
-AUTO_LAYOUT_1="maximize"
-AUTO_LAYOUT_2="equal"
-AUTO_LAYOUT_3="main-two-side"
-AUTO_LAYOUT_4="grid"
-AUTO_LAYOUT_5="grid-wide-bottom"
-
-# Window ordering strategy
-# Available strategies:
-#   position/spatial     - Order by position (left-to-right, top-to-bottom) - DEFAULT
-#   creation/chronological - Order by window creation time
-#   stacking/focus       - Order by stacking/focus history (most recent first)
-WINDOW_ORDER_STRATEGY=position
-
-# Ignored applications (comma-separated list)
-# These applications will not be included in auto-layout positioning
-# Matches against WM_CLASS and window title
-# Supports wildcards (*,?) and case-sensitive prefix (cs:)
-# Common patterns:
-#   About - About dialogs
-#   ulauncher* - Application launcher
-#   cs:Warning*, cs:Error* - System warnings/errors
-#   cs:Password Required* - Password prompts
-#   cs:Settings - Settings windows (exact match)
-#   *Preferences - Preference dialogs
-#   Application Finder - XFCE app finder
-#   Save*, Open* - File dialogs
-IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,*Preferences,Application Finder"
-EOF
-    chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/settings.conf" 2>/dev/null || true
-    echo "✓ Created settings configuration"
-else
-    echo "✓ Existing settings configuration preserved"
-fi
-
-if [[ ! -f "$CONFIG_DIR/presets.conf" ]]; then
-    cat > "$CONFIG_DIR/presets.conf" << 'EOF'
-# Window positioning presets
-# Format: NAME=X,Y,WIDTH,HEIGHT
-# You can add custom presets here
-
-# Browser presets
-browser-left=10,40,960,1040
-browser-right=970,40,960,1040
-browser-fullwidth=10,40,1900,1040
-
-# Terminal presets  
-terminal-top=10,40,1920,500
-terminal-bottom=10,580,1920,500
-terminal-small=1400,40,520,600
-
-# Editor presets
-editor-center=480,270,960,540
-editor-left=10,40,950,1040
-editor-right=970,40,950,1040
-
-# Communication apps
-chat-right=1400,40,520,1040
-video-call=300,200,1320,800
-
-# Development layout
-ide-main=10,40,1200,1040
-browser-dev=1220,40,700,520
-terminal-dev=1220,570,700,510
-EOF
-    chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/presets.conf" 2>/dev/null || true
-    echo "✓ Created default presets configuration"
-else
-    echo "✓ Existing presets configuration preserved"
-fi
 
 # Create keyboard shortcut helper
 cat > "$CONFIG_DIR/keyboard-shortcuts.txt" << 'EOF'

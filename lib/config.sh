@@ -70,10 +70,11 @@ WINDOW_ORDER_STRATEGY=position
 #   cs:Warning*, cs:Error* - System warnings/errors
 #   cs:Password Required* - Password prompts
 #   cs:Settings - Settings windows (exact match)
+#   cs:Select Power Mode - Power management dialogs
 #   *Preferences - Preference dialogs
 #   Application Finder - XFCE app finder
 #   Save*, Open*, Save As* - File dialogs
-IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,*Preferences,Application Finder,cs:Save As,cs:Save Changes"
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes"
 EOF
     fi
 
@@ -112,7 +113,8 @@ load_config() {
     WINDOW_ORDER_STRATEGY=${WINDOW_ORDER_STRATEGY:-position}
     export WINDOW_ORDER_STRATEGY
     
-    # Ignored applications (comma-separated list)
+    # Ignored applications (comma-separated list) with fallback to defaults
+    IGNORED_APPS=${IGNORED_APPS:-"About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes"}
     validate_ignored_apps
     export IGNORED_APPS
 }

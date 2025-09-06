@@ -563,11 +563,13 @@ handle_daemon_command() {
             response=$(auto_layout_all_monitors 2>&1)
             ;;
         master*)
-            # Parse master command: "master vertical 60", "master center 50", "master vertical --all 60"
+            # Parse master command: "master vertical 60", "master center 50", "master increase/decrease"
             read -ra cmd_parts <<< "$command"
             local orientation="${cmd_parts[1]}"
             
-            if [[ "$orientation" == "center" ]]; then
+            if [[ "$orientation" == "increase" || "$orientation" == "decrease" ]]; then
+                response=$(adjust_master_size "$orientation" 2>&1)
+            elif [[ "$orientation" == "center" ]]; then
                 local percentage="${cmd_parts[2]:-50}"
                 response=$(center_master_layout_current_monitor "$percentage" 2>&1)
             elif [[ "${cmd_parts[2]}" == "--all" ]]; then
@@ -736,6 +738,60 @@ center_master_layout_current_monitor() {
     # Trigger daemon to immediately reapply with new preference
     trigger_daemon_reapply >/dev/null 2>&1
 }
+
+# Adjust master window size by 5% increments
+adjust_master_size() {
+    local action="$1"  # increase or decrease
+    
+    get_screen_info
+    local current_monitor=$(get_current_monitor)
+    local current_workspace=$(get_current_workspace)
+    IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
+    
+    # Get current saved layout for this workspace/monitor
+    local current_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" "" "")
+    
+    if [[ -z "$current_layout" || ! "$current_layout" =~ ^master[[:space:]](.+)$ ]]; then
+        echo "Error: No active master layout found on current monitor"
+        echo "Use 'place-window master vertical/horizontal/center' to set a master layout first"
+        return 1
+    fi
+    
+    # Parse current layout: "master vertical 60" or "master center 50"
+    local master_params="${BASH_REMATCH[1]}"
+    read -r orientation percentage <<< "$master_params"
+    
+    # Calculate new percentage (5% increment/decrement)
+    local new_percentage
+    if [[ "$action" == "increase" ]]; then
+        new_percentage=$((percentage + 5))
+    else
+        new_percentage=$((percentage - 5))
+    fi
+    
+    # Validate ranges based on layout type
+    if [[ "$orientation" == "center" ]]; then
+        if [[ $new_percentage -lt 20 || $new_percentage -gt 80 ]]; then
+            echo "Error: Center master percentage must be between 20% and 80% (current: ${percentage}%)"
+            return 1
+        fi
+    else
+        if [[ $new_percentage -lt 10 || $new_percentage -gt 90 ]]; then
+            echo "Error: Master percentage must be between 10% and 90% (current: ${percentage}%)"
+            return 1
+        fi
+    fi
+    
+    echo "${action^}ing master size from ${percentage}% to ${new_percentage}%"
+    
+    # Apply the new layout with adjusted percentage
+    if [[ "$orientation" == "center" ]]; then
+        center_master_layout_current_monitor "$new_percentage"
+    else
+        master_stack_layout_current_monitor "$orientation" "$new_percentage"
+    fi
+}
+
 # Focus window navigation
 # Window operation functions moved to windows.sh:
 # - focus_window()

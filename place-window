@@ -166,6 +166,10 @@ case "${1:-}" in
                     exit 1
                 fi
                 ;;
+            increase|decrease)
+                # Adjust current master layout size by 5%
+                send_daemon_command "master $2"
+                ;;
             *)
                 echo "Master layout commands:"
                 echo "  place-window master vertical [percentage]   Master on left, stack on right - current monitor"
@@ -173,9 +177,12 @@ case "${1:-}" in
                 echo "  place-window master center [percentage]     Center master with sidebars - current monitor"
                 echo "  place-window master vertical --all [percentage]   Apply to all monitors"
                 echo "  place-window master horizontal --all [percentage] Apply to all monitors"
+                echo "  place-window master increase               Increase current master size by 5%"
+                echo "  place-window master decrease               Decrease current master size by 5%"
                 echo ""
                 echo "Default master percentage: 60% (range: 10-90)"
                 echo "Default center percentage: 50% (range: 20-80)"
+                echo "Size adjustments work with any active master layout (vertical/horizontal/center)"
                 echo ""
                 echo "Note: Master commands require the daemon for window list access."
                 echo "Start daemon with: place-window watch start"
