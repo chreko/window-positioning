@@ -712,18 +712,38 @@ swap_window_positions() {
 
 # Helper function to swap two windows' geometries directly
 swap_window_geometries() {
-    local w1="$1" w2="$2"
+    local win1="$1" win2="$2"
 
-    # Read both windows' FRAME geometry via wmctrl (x,y,w,h)
-    local f1 f2 fx1 fy1 w1 h1 fx2 fy2 w2 h2
-    f1=$(get_window_frame_geometry_wmctrl "$w1") || return 1
-    f2=$(get_window_frame_geometry_wmctrl "$w2") || return 1
-    IFS=',' read -r fx1 fy1 w1 h1 <<<"$f1"
-    IFS=',' read -r fx2 fy2 w2 h2 <<<"$f2"
+    # Get frame extents to calculate coordinate offset
+    local L1 R1 T1 B1 L2 R2 T2 B2
+    read -r L1 R1 T1 B1 < <(xprop -id "$win1" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+    read -r L2 R2 T2 B2 < <(xprop -id "$win2" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+    : "${L1:=0}"; : "${T1:=0}"; : "${L2:=0}"; : "${T2:=0}"
 
-    # Swap positions/sizes with adaptive writer (no drift)
-    apply_geom_adaptive "$w1" "$fx2" "$fy2" "$w2" "$h2"
-    apply_geom_adaptive "$w2" "$fx1" "$fy1" "$w1" "$h1"
+    # Use xwininfo for client coordinates
+    local info1 info2 x1 y1 w1 h1 x2 y2 w2 h2
+    info1=$(xwininfo -id "$win1")
+    info2=$(xwininfo -id "$win2")
+    
+    x1=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info1")
+    y1=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info1")
+    w1=$(awk '/Width:/ {print $NF}' <<<"$info1")
+    h1=$(awk '/Height:/ {print $NF}' <<<"$info1")
+    
+    x2=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info2")
+    y2=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info2")
+    w2=$(awk '/Width:/ {print $NF}' <<<"$info2")
+    h2=$(awk '/Height:/ {print $NF}' <<<"$info2")
+
+    # Convert to coordinates wmctrl expects (subtract frame extents)
+    local wmctrl_x1=$((x1 - L1)) wmctrl_y1=$((y1 - T1))
+    local wmctrl_x2=$((x2 - L2)) wmctrl_y2=$((y2 - T2))
+
+    # Swap using wmctrl with corrected coordinates
+    wmctrl -i -r "$win1" -e "0,$wmctrl_x2,$wmctrl_y2,$w2,$h2"
+    wmctrl -i -r "$win2" -e "0,$wmctrl_x1,$wmctrl_y1,$w1,$h1"
 }
 
 cycle_window_positions() {
