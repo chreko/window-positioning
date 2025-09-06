@@ -188,6 +188,35 @@ place-window config panel 40   # Set panel height to 40px
 place-window config show       # Show all settings
 ```
 
+### Ignored Applications Configuration
+
+The tool can filter out specific windows from auto-layout operations using pattern matching. This is configured via the `IGNORED_APPS` setting in `~/.config/window-positioning/settings.conf`.
+
+**Pattern Syntax:**
+- **Simple match**: `Settings` - matches "Settings" anywhere (case-insensitive)
+- **Wildcards**: `*Settings*` - matches windows containing "Settings"
+  - `*` matches any characters
+  - `?` matches single character
+- **Case-sensitive**: `cs:Settings` - exact case match
+- **Combined**: `cs:*Warning*` - case-sensitive wildcard
+
+**Default Configuration:**
+```bash
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Password Required*,cs:Settings"
+```
+
+**Examples:**
+```bash
+# Filter specific dialogs
+IGNORED_APPS="About,cs:Warning,cs:Error"
+
+# Filter all Firefox popups
+IGNORED_APPS="*Mozilla Firefox*"
+
+# Mix patterns
+IGNORED_APPS="ulauncher*,*password*,cs:Settings,Application Finder"
+```
+
 ## Keyboard Shortcuts
 
 Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcuts):

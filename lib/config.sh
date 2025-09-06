@@ -64,7 +64,16 @@ WINDOW_ORDER_STRATEGY=position
 # These applications will not be included in auto-layout positioning
 # Matches against WM_CLASS and window title
 # Supports wildcards (*,?) and case-sensitive prefix (cs:)
-IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Password Required*,cs:Settings"
+# Common patterns:
+#   About - About dialogs
+#   ulauncher* - Application launcher
+#   cs:Warning*, cs:Error* - System warnings/errors
+#   cs:Password Required* - Password prompts
+#   cs:Settings - Settings windows (exact match)
+#   *Preferences - Preference dialogs
+#   Application Finder - XFCE app finder
+#   Save*, Open* - File dialogs
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,*Preferences,Application Finder"
 EOF
     fi
 
@@ -104,7 +113,48 @@ load_config() {
     export WINDOW_ORDER_STRATEGY
     
     # Ignored applications (comma-separated list)
+    validate_ignored_apps
     export IGNORED_APPS
+}
+
+# Validate IGNORED_APPS syntax
+validate_ignored_apps() {
+    [[ -z "$IGNORED_APPS" ]] && return 0
+    
+    local IFS=','
+    local apps=($IGNORED_APPS)
+    local errors=()
+    
+    for app in "${apps[@]}"; do
+        # Trim whitespace
+        app=$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [[ -z "$app" ]] && continue
+        
+        # Check for case-sensitive prefix
+        if [[ "$app" == cs:* ]]; then
+            app="${app#cs:}"
+        fi
+        
+        # Validate pattern characters
+        if echo "$app" | grep -q '[[\]'; then
+            errors+=("Invalid pattern '$app': Square brackets not supported")
+        fi
+        
+        # Check for unmatched wildcards at beginning (valid but warn)
+        if [[ "$app" == \** ]] || [[ "$app" == \?* ]]; then
+            echo "Note: Pattern '$app' starts with wildcard - will match many windows" >&2
+        fi
+    done
+    
+    if [[ ${#errors[@]} -gt 0 ]]; then
+        echo "IGNORED_APPS validation errors:" >&2
+        printf '%s\n' "${errors[@]}" >&2
+        echo "Using empty IGNORED_APPS due to errors" >&2
+        IGNORED_APPS=""
+        return 1
+    fi
+    
+    return 0
 }
 
 # Update a setting in the config file

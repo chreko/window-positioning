@@ -168,7 +168,16 @@ WINDOW_ORDER_STRATEGY=position
 # These applications will not be included in auto-layout positioning
 # Matches against WM_CLASS and window title
 # Supports wildcards (*,?) and case-sensitive prefix (cs:)
-IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Password Required*,cs:Settings"
+# Common patterns:
+#   About - About dialogs
+#   ulauncher* - Application launcher
+#   cs:Warning*, cs:Error* - System warnings/errors
+#   cs:Password Required* - Password prompts
+#   cs:Settings - Settings windows (exact match)
+#   *Preferences - Preference dialogs
+#   Application Finder - XFCE app finder
+#   Save*, Open* - File dialogs
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,*Preferences,Application Finder"
 EOF
     chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/settings.conf" 2>/dev/null || true
     echo "✓ Created settings configuration"
