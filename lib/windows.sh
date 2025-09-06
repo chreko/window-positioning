@@ -573,6 +573,8 @@ minimize_others() {
     local active_title=$(xdotool getwindowname "$active_id" 2>/dev/null || echo "Window $active_id")
     echo "Active window ID: $active_id ($active_title)"
     
+    # Initialize screen info before getting current context
+    get_screen_info
     # Get current monitor for the active window  
     get_current_context
     local minimized_count=0

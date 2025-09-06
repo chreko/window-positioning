@@ -104,27 +104,21 @@ place-window auto-config 3 three-columns   # Set 3-window layout to columns
 - **5 windows:** center-corners, two-three-columns, grid-wide-bottom
 
 ### Watch Mode (Automatic Tiling Daemon)
-The watch mode runs as a systemd user service for reliable automatic tiling:
+The watch mode runs as an XDG autostart application for seamless desktop integration:
 
 ```bash
-# Service control via place-window
+# Daemon control via place-window wrapper
 place-window watch start        # Start the daemon
 place-window watch stop         # Stop the daemon
 place-window watch status       # Check daemon status
-place-window watch enable       # Auto-start on login
+place-window watch enable       # Enable auto-start on login
 place-window watch disable      # Disable auto-start
 place-window watch restart      # Restart the daemon
 place-window watch logs         # View daemon logs
-
-# Direct systemd control
-systemctl --user start window-positioning
-systemctl --user stop window-positioning
-systemctl --user status window-positioning
-systemctl --user enable window-positioning   # Auto-start on login
 ```
 
 **Features:**
-- **Systemd User Service**: Runs as reliable user service with crash recovery
+- **XDG Autostart Integration**: Seamlessly integrates with desktop environment startup
 - **Event-driven**: Efficient X11 property monitoring (not polling)
 - **Resource Efficient**: Uses only 3-4 background processes
 - **Auto-restart**: Automatically restarts on crashes
