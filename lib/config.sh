@@ -59,6 +59,11 @@ DECORATION_WIDTH=0
 #   creation/chronological - Order by window creation time
 #   stacking/focus       - Order by stacking/focus history (most recent first)
 WINDOW_ORDER_STRATEGY=position
+
+# Ignored applications (comma-separated list)
+# These applications will not be included in auto-layout positioning
+# Matches against WM_CLASS property (case-insensitive)
+IGNORED_APPS="ulauncher,warning,password,settings"
 EOF
     fi
 
@@ -96,6 +101,10 @@ load_config() {
     # Window ordering strategy
     WINDOW_ORDER_STRATEGY=${WINDOW_ORDER_STRATEGY:-position}
     export WINDOW_ORDER_STRATEGY
+    
+    # Ignored applications (comma-separated list)
+    IGNORED_APPS=${IGNORED_APPS:-"ulauncher,warning,password,settings"}
+    export IGNORED_APPS
 }
 
 # Update a setting in the config file

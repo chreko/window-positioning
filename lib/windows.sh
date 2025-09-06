@@ -197,6 +197,25 @@ get_visible_windows() {
             continue
         fi
         
+        # Skip ignored applications from config
+        local class=$(xprop -id "$id" WM_CLASS 2>/dev/null)
+        if [[ -n "$IGNORED_APPS" && -n "$class" ]]; then
+            # Convert comma-separated list to array
+            IFS=',' read -ra ignored_array <<< "$IGNORED_APPS"
+            local should_skip=false
+            for app in "${ignored_array[@]}"; do
+                # Trim whitespace and check case-insensitive match
+                app=$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if echo "$class" | grep -qi "$app"; then
+                    should_skip=true
+                    break
+                fi
+            done
+            if [[ "$should_skip" == true ]]; then
+                continue
+            fi
+        fi
+        
         # If monitor specified, check if window is on that monitor
         if [[ -n "$monitor_name" ]]; then
             local window_mon=$(get_window_monitor "$id" | cut -d: -f1)

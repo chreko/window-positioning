@@ -156,6 +156,18 @@ AUTO_LAYOUT_2="equal"
 AUTO_LAYOUT_3="main-two-side"
 AUTO_LAYOUT_4="grid"
 AUTO_LAYOUT_5="grid-wide-bottom"
+
+# Window ordering strategy
+# Available strategies:
+#   position/spatial     - Order by position (left-to-right, top-to-bottom) - DEFAULT
+#   creation/chronological - Order by window creation time
+#   stacking/focus       - Order by stacking/focus history (most recent first)
+WINDOW_ORDER_STRATEGY=position
+
+# Ignored applications (comma-separated list)
+# These applications will not be included in auto-layout positioning
+# Matches against WM_CLASS property (case-insensitive)
+IGNORED_APPS="ulauncher,warning,password,settings"
 EOF
     chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/settings.conf" 2>/dev/null || true
     echo "✓ Created settings configuration"
