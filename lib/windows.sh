@@ -727,9 +727,16 @@ swap_window_geometries() {
 }
 
 cycle_window_positions() {
+    # Prevent the daemon from immediately reapplying a saved layout.
+    get_current_context
+    if declare -f hold_now >/dev/null 2>&1; then
+        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
+    fi
+
     mapfile -t windows < <(get_windows_ordered)
     local n=${#windows[@]}
-    (( n < 2 )) && return 0
+    echo "DEBUG: Found ${n} windows to cycle" >&2
+    (( n < 2 )) && { echo "DEBUG: Not enough windows to cycle (need at least 2)" >&2; return 0; }
     # Clockwise: A B C -> C A B
     for (( i = 1; i < n; i++ )); do
         swap_window_geometries "${windows[0]}" "${windows[$i]}"
@@ -737,6 +744,11 @@ cycle_window_positions() {
 }
 
 reverse_cycle_window_positions() {
+    get_current_context
+    if declare -f hold_now >/dev/null 2>&1; then
+        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
+    fi
+
     mapfile -t windows < <(get_windows_ordered)
     local n=${#windows[@]}
     (( n < 2 )) && return 0
