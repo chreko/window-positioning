@@ -160,10 +160,12 @@ disable_auto_layout() {
 toggle_auto_layout() {
     if is_auto_layout_enabled; then
         disable_auto_layout
-        echo "Auto-layout disabled - daemon will run but not apply layouts automatically"
+        echo "Auto-layout disabled - daemon enters idle mode for maximum CPU savings"
+        echo "All window monitoring and processing paused until re-enabled"
     else
         enable_auto_layout  
         echo "Auto-layout enabled - daemon will automatically apply layouts on window changes"
+        echo "Window monitoring and layout processing resumed"
     fi
 }
 
@@ -465,7 +467,7 @@ show_daemon_status() {
         if is_auto_layout_enabled; then
             echo "Auto-layout: ENABLED (daemon will apply layouts automatically)"
         else
-            echo "Auto-layout: DISABLED (daemon monitoring only, no automatic layouts)"
+            echo "Auto-layout: DISABLED (daemon in idle mode - all processing paused for max CPU savings)"
         fi
     else
         echo "Watch mode is not running"
@@ -508,6 +510,12 @@ reconcile_ws_mon() {  # args: workspace monitor_name
 }
 
 monitor_tick() {
+    # Skip all processing if auto-layout is disabled (maximum CPU savings)
+    if ! is_auto_layout_enabled; then
+        echo "$(date): Auto-layout disabled - daemon idle (maximum CPU savings)"
+        return 0
+    fi
+    
     # Iterate just the current workspace; your layouts also operate per monitor.
     local ws mon k
     ws="$(get_current_workspace)"
