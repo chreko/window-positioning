@@ -34,6 +34,14 @@ declare -Ag WINDOW_DIRTY WINDOW_GEN WINDOW_COUNT 2>/dev/null || true
 # Hold map to protect manual operations from immediate reconciliation
 declare -Ag HOLD_UNTIL_MS 2>/dev/null || true
 
+# Monitor detection caching for CPU optimization
+SCREEN_INFO_CACHE=""
+SCREEN_INFO_CACHE_TIME=0
+
+# Debouncing for rapid changes
+LAST_CHANGE_TIME=0
+DEBOUNCE_DELAY=2  # seconds
+
 hold_now() {  # ws mon_name [ms]
   local ws="$1" mon="$2" ms="${3:-900}"
   local now; now=$(date +%s%3N)
@@ -74,6 +82,20 @@ monitor_should_apply() {
 # Window functions moved to windows.sh
 
 # get_visible_windows_by_creation_for_workspace() moved to windows.sh to avoid duplication
+
+# Cached screen info for CPU optimization - monitors rarely change
+get_screen_info_cached() {
+    local now=$(date +%s)
+    if [[ -z "$SCREEN_INFO_CACHE" ]] || (( now - SCREEN_INFO_CACHE_TIME > 30 )); then
+        get_screen_info  # Calls original function from monitors.sh
+        SCREEN_INFO_CACHE="$MONITORS"
+        SCREEN_INFO_CACHE_TIME=$now
+        echo "$(date): Monitor info refreshed (cache TTL: 30s)"
+    else
+        # Restore cached monitors
+        MONITORS=("${SCREEN_INFO_CACHE[@]}")
+    fi
+}
 
 
 # Set up IPC pipes for daemon communication
@@ -171,7 +193,7 @@ watch_daemon_with_ipc() {
     exec 3<>"$DAEMON_CMD_PIPE"
     exec 4<>"$DAEMON_RESP_PIPE"
 
-    local TICK=0.75  # seconds - increased for better stability
+    local TICK=1.5  # seconds - optimized for better CPU efficiency while maintaining responsiveness
 
     echo "$(date): entering main loop"
     while true; do
@@ -199,7 +221,7 @@ get_current_master_state() {
     # Add small delay to ensure workspace switch is complete
     sleep 0.05
     
-    get_screen_info
+    get_screen_info_cached
     local combined_state="workspace:$current_workspace|"
     
     for monitor in "${MONITORS[@]}"; do
@@ -460,18 +482,28 @@ reconcile_ws_mon() {  # args: workspace monitor_name
     local ws="$1" mon="$2"
     local k; k="$(key_wsmon "$ws" "$mon")"
     
-    # Get current windows
+    # Quick window count check first (fast path for stable windows)
+    local quick_count
+    quick_count=$(wmctrl -l 2>/dev/null | awk -v ws="$ws" '$2==ws || $2==-1' | wc -l)
+    local last_count="${WINDOW_COUNT["$k"]-0}"
+    
+    # Early exit if count unchanged (major CPU savings)
+    if [[ "$quick_count" -eq "$last_count" ]]; then
+        return 0
+    fi
+    
+    # Full reconciliation only when count changed
     local current_windows
     current_windows="$(get_windows_ordered "$mon")"
     local current_count
     current_count=$(echo "$current_windows" | grep -c . 2>/dev/null || echo 0)
     
-    # Check if window count changed since last check
-    local last_count="${WINDOW_COUNT["$k"]-0}"
+    # Update tracking
     if [[ "$current_count" -ne "$last_count" ]]; then
         WINDOW_DIRTY["$k"]=1
         WINDOW_COUNT["$k"]=$current_count
         WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
+        echo "$(date): Window count changed on monitor $mon: $last_count -> $current_count"
     fi
 }
 
@@ -479,7 +511,7 @@ monitor_tick() {
     # Iterate just the current workspace; your layouts also operate per monitor.
     local ws mon k
     ws="$(get_current_workspace)"
-    get_screen_info  # refresh monitors
+    get_screen_info_cached  # refresh monitors (cached for CPU efficiency)
     for mon in "${MONITORS[@]}"; do
         IFS=':' read -r monitor_name mx my mw mh <<< "$mon"
 
@@ -493,9 +525,20 @@ monitor_tick() {
         k="$(key_wsmon "$ws" "$monitor_name")"
         local dirty="${WINDOW_DIRTY["$k"]-0}"
         if is_auto_layout_enabled && [[ "$dirty" -eq 1 ]] && monitor_should_apply; then
-            # Reapply using stored order only
-            reapply_saved_layout_for_monitor "$ws" "$mon"
-            WINDOW_DIRTY["$k"]=0
+            # Debounce rapid changes to avoid excessive layout applications
+            local now=$(date +%s)
+            local time_since_last_change=$((now - LAST_CHANGE_TIME))
+            
+            if [[ $time_since_last_change -ge $DEBOUNCE_DELAY ]]; then
+                # Apply layout after debounce delay
+                echo "$(date): Applying debounced layout to monitor $monitor_name"
+                reapply_saved_layout_for_monitor "$ws" "$mon"
+                WINDOW_DIRTY["$k"]=0
+                LAST_CHANGE_TIME=$now
+            else
+                # Still within debounce period, keep dirty flag
+                echo "$(date): Debouncing changes on monitor $monitor_name (${time_since_last_change}s < ${DEBOUNCE_DELAY}s)"
+            fi
         fi
     done
 }
