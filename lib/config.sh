@@ -74,7 +74,7 @@ WINDOW_ORDER_STRATEGY=position
 #   *Preferences - Preference dialogs
 #   Application Finder - XFCE app finder
 #   Save*, Open*, Save As* - File dialogs
-IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes"
+IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes,cs:Unlock Keyring"
 EOF
     fi
 
