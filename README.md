@@ -1,6 +1,6 @@
-# Window Positioning Tool for Qubes OS
+# Window Positioning Tool
 
-A powerful window positioning tool designed specifically for Qubes OS dom0 that allows you to select windows with your mouse and position them using presets or custom coordinates, or automatically arrange all visible windows.
+A powerful X11 window positioning and tiling tool that allows you to select windows with your mouse and position them using presets or custom coordinates, or automatically arrange all visible windows. Works on any Linux desktop environment with X11 support.
 
 ## Features
 
@@ -17,11 +17,11 @@ A powerful window positioning tool designed specifically for Qubes OS dom0 that 
 - **Save/Load Presets**: Create and reuse your own window arrangements
 - **Workspace Management**: Move windows between workspaces
 - **Real-time Configuration**: Adjust gaps and settings without restarting
-- **XFCE Integration**: Designed for Qubes OS dom0's XFCE environment
+- **Desktop Integration**: Works with XFCE, GNOME, KDE, and other X11 desktop environments
 
 ## Installation
 
-1. Clone or download this repository to your Qubes dom0
+1. Clone or download this repository
 2. Run the installation script:
    ```bash
    cd window-positioning
@@ -37,6 +37,8 @@ The installer will:
 - Create keyboard shortcuts reference and uninstaller
 
 **Important**: The installer correctly handles user vs root permissions - config files are created in the actual user's home directory, not root's.
+
+**Note for Qubes OS users**: The installer includes support for `qubes-dom0-update` to install dependencies in dom0.
 
 ## Usage
 
@@ -329,8 +331,10 @@ place-window save work-layout   # For each window
 
 ## Requirements
 
-- Qubes OS 4.1+ with XFCE (dom0)
-- `xdotool` and `wmctrl` (auto-installed)
+- Linux with X11 window system
+- Any desktop environment (XFCE, GNOME, KDE, etc.)
+- `xdotool` and `wmctrl` (auto-installed by the installer)
+- For package installation: `apt`, `dnf/yum`, `pacman`, or `qubes-dom0-update` (Qubes OS)
 
 ## Uninstalling
 
@@ -355,12 +359,16 @@ Run the uninstaller:
 
 ## Why This Tool?
 
-Qubes OS's approach to window management (seamlessly integrated AppVM windows) makes traditional window positioning methods ineffective. This tool bridges that gap by:
+Many Linux users want the benefits of tiling window managers but prefer to stay with their familiar desktop environment. This tool bridges that gap by:
 
-1. Working directly with dom0's window manager
-2. Using mouse selection to identify any window regardless of source VM
+1. Working with any X11 window manager without requiring a full switch
+2. Using intuitive mouse selection to identify any window
 3. Providing both quick presets and precise control
-4. Integrating with XFCE's keyboard shortcut system
+4. Integrating with your desktop's existing keyboard shortcut system
 5. Saving/loading arrangements that persist across sessions
+6. Offering automatic tiling with customizable layouts
+7. Supporting advanced features like master-stack layouts and simultaneous resize
 
-Perfect for users who want consistent, efficient window layouts in their Qubes workflow.
+Perfect for users who want the efficiency of tiling window management while keeping their preferred desktop environment.
+
+**Note for Qubes OS users**: This tool works seamlessly with Qubes' unique approach to window management, handling windows from different VMs as naturally as any other window.
