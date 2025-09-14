@@ -167,6 +167,12 @@ toggle_auto_layout() {
         echo "Auto-layout enabled - daemon will automatically apply layouts on window changes"
         echo "Window monitoring and layout processing resumed"
     fi
+    
+    # Send SIGUSR2 to daemon to wake it from idle sleep
+    local daemon_pid=$(get_daemon_pid)
+    if [[ -n "$daemon_pid" ]]; then
+        kill -USR2 "$daemon_pid" 2>/dev/null || true
+    fi
 }
 
 # Combined daemon that handles both window monitoring and IPC commands
@@ -174,6 +180,7 @@ watch_daemon_with_ipc() {
     # Single-process daemon: command loop + monitor tick in one place
     trap 'cleanup_daemon_ipc; echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
     trap 'echo "$(date): SIGUSR1 -> reapply layouts"; apply_workspace_layout' SIGUSR1
+    trap 'echo "$(date): SIGUSR2 -> wake from idle"' SIGUSR2
 
     echo "$(date): Watch daemon with IPC started (single loop)"
     
@@ -279,21 +286,29 @@ watch_daemon_monitor() {
     echo "$(date): Window monitoring started"
     local last_master_state=""
     
+    # Set up signal handler to wake from idle sleep
+    trap 'echo "$(date): Woken from idle by toggle signal"' SIGUSR2
+    
     while true; do
+        # Enter true idle mode when auto-layout is disabled
+        if ! is_auto_layout_enabled; then
+            echo "$(date): Auto-layout disabled - entering zero-CPU idle mode"
+            # Sleep indefinitely until SIGUSR2 signal (zero CPU usage)
+            sleep infinity &
+            wait $!
+            echo "$(date): Waking from idle mode"
+            # Reset state for fresh rebuild when re-enabled
+            last_master_state=""
+            continue
+        fi
+        
         local current_state
         current_state=$(get_current_master_state)
         
         if [[ "$current_state" != "$last_master_state" ]]; then
             echo "$(date): Window state changed"
-            
-            # Only apply layouts if auto-layout is enabled
-            if is_auto_layout_enabled; then
-                echo "$(date): Auto-layout enabled - applying layouts"
-                apply_workspace_layout
-            else
-                echo "$(date): Auto-layout disabled - skipping layout application"
-            fi
-            
+            echo "$(date): Auto-layout enabled - applying layouts"
+            apply_workspace_layout
             last_master_state="$current_state"
         fi
         
@@ -342,9 +357,10 @@ watch_daemon_internal() {
     
     local last_master_state=""
     
-    # Trap signals for clean exit and immediate reapplication
+    # Trap signals for clean exit, immediate reapplication, and idle wake
     trap 'echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
     trap 'echo "$(date): Received reload signal - reapplying layouts"; apply_workspace_layout' SIGUSR1
+    trap 'echo "$(date): Received toggle signal - waking from idle"' SIGUSR2
     
     # Use the global get_current_master_state function (removed duplicate)
     
@@ -361,11 +377,24 @@ watch_daemon_internal() {
     }
     
     echo "$(date): Using intelligent polling with master window list tracking"
-    echo "$(date): Polling interval: 0.1 seconds for instant response"
+    echo "$(date): Polling interval: 1.0 seconds for instant response"
     
     local last_workspace=""
     
     while true; do
+        # Enter true idle mode when auto-layout is disabled
+        if ! is_auto_layout_enabled; then
+            echo "$(date): Auto-layout disabled - entering zero-CPU idle mode"
+            # Sleep indefinitely until SIGUSR2 signal (zero CPU usage)
+            sleep infinity &
+            wait $!
+            echo "$(date): Waking from idle mode"
+            # Reset state for fresh rebuild when re-enabled
+            last_master_state=""
+            last_workspace=""
+            continue
+        fi
+        
         # Check for workspace changes and stabilize before processing
         local current_workspace_check
         current_workspace_check=$(get_current_workspace)
