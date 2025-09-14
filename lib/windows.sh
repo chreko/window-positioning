@@ -720,14 +720,21 @@ swap_window_positions() {
         return 1
     fi
     
+    # Initialize monitor info first
+    get_screen_info
+    
     # Get current workspace and monitor info
     local current_workspace=$(get_current_workspace)
     local monitor1=$(get_window_monitor "$window1")
     local monitor2=$(get_window_monitor "$window2")
     
+    # Convert window IDs to hex format for wmctrl (xdotool returns decimal)
+    local window1_hex=$(printf "0x%08x" "$window1")
+    local window2_hex=$(printf "0x%08x" "$window2")
+    
     # Get workspace for each window to verify they're on current workspace
-    local window1_workspace=$(wmctrl -l 2>/dev/null | grep "^$window1 " | awk '{print $2}')
-    local window2_workspace=$(wmctrl -l 2>/dev/null | grep "^$window2 " | awk '{print $2}')
+    local window1_workspace=$(wmctrl -l 2>/dev/null | grep -i "^$window1_hex " | awk '{print $2}')
+    local window2_workspace=$(wmctrl -l 2>/dev/null | grep -i "^$window2_hex " | awk '{print $2}')
     
     # Check if both windows are on the same monitor AND same workspace
     if [[ "$monitor1" == "$monitor2" ]]; then
@@ -737,24 +744,9 @@ swap_window_positions() {
             
             local monitor_name=$(echo "$monitor1" | cut -d':' -f1)
             
-            # Swap CLIENT geometries
-            local g1 g2 x1 y1 w1 h1 x2 y2 w2 h2
-            g1=$(get_window_client_geometry "$window1")
-            g2=$(get_window_client_geometry "$window2")
-            
-            if [[ -n "$g1" && -n "$g2" ]]; then
-                IFS=',' read -r x1 y1 w1 h1 <<<"$g1"
-                IFS=',' read -r x2 y2 w2 h2 <<<"$g2"
-
-                place_window_client_geometry "$window1" "$x2" "$y2" "$w2" "$h2"
-                place_window_client_geometry "$window2" "$x1" "$y1" "$w1" "$h1"
-
-                echo "Swapped client geometries of $window1 and $window2"
-                
-                echo "Window geometries have been swapped successfully"
-            else
-                echo "Warning: Could not get geometry for one or both windows"
-            fi
+            # Use the proper swap function that handles frame/client conversion correctly
+            swap_window_geometries "$window1" "$window2"
+            echo "Window geometries have been swapped successfully"
         else
             echo "Cannot swap windows: both windows must be on the current workspace"
             echo "Window 1 workspace: $window1_workspace, Window 2 workspace: $window2_workspace, Current: $current_workspace"

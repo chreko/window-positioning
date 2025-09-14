@@ -214,8 +214,8 @@ case "${1:-}" in
         minimize_others
         ;;
     swap)
-        # Window swapping (2 selected windows) - route through daemon for persistent state
-        send_daemon_command "swap"
+        # Window swapping (2 selected windows) - must run directly for window selection
+        swap_window_positions
         ;;
     cycle)
         # Window cycling (all windows on current monitor) - route through daemon for persistent state
