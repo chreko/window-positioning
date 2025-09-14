@@ -384,9 +384,10 @@ watch_daemon_internal() {
         local state_key="${current_workspace_check}:${current_master_state}"
         if [[ "$state_key" != "$last_master_state" ]]; then
             # Check if this is just a workspace change (no action needed)
-            if [[ "$current_workspace_check" != "${last_master_state%%:*}" ]]; then
+            if [[ "$current_workspace_check" != "${last_master_state%%:*}" ]] && [[ -n "$last_master_state" ]]; then
                 echo "$(date): Workspace changed - resetting state tracking"
-            elif [[ -n "$last_master_state" ]]; then
+            else
+                # Apply layout on state change (including initial state)
                 echo "$(date): Master window state changed on workspace $current_workspace_check - triggering layout"
                 
                 # Minimal delay to ensure changes are complete
