@@ -1265,17 +1265,17 @@ auto_layout_single_monitor() {
 auto_layout_and_reset_monitor() {
     local monitor="$1"
     IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-    
+
     # Clear saved layouts for this monitor on current workspace
-    local workspace=$(get_current_workspace) 
+    local workspace=$(get_current_workspace)
     clear_workspace_monitor_layout "$workspace" "$monitor_name"
-    
+
     # Get windows for this monitor (workspace-aware for persistent ordering)
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
     done < <(get_windows_ordered "$monitor_name")
-    
+
     # Apply fresh auto-layout
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
     
@@ -1347,7 +1347,7 @@ auto_layout_all_monitors() {
     # Process each monitor independently
     for monitor in "${MONITORS[@]}"; do
         IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-        
+
         # Get current windows on this monitor
         local windows_on_monitor=()
         local window_list
@@ -1355,7 +1355,7 @@ auto_layout_all_monitors() {
         if [[ -n "$window_list" ]]; then
             readarray -t windows_on_monitor <<< "$window_list"
         fi
-        
+
         # Apply layout to this monitor
         if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
             auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"

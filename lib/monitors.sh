@@ -24,9 +24,10 @@ get_screen_info() {
     # Get monitor information using xrandr
     MONITORS=()
     while IFS= read -r line; do
-        if [[ $line =~ ^([^[:space:]]+)[[:space:]]+connected[[:space:]]+([0-9]+x[0-9]+\+[0-9]+\+[0-9]+) ]]; then
+        # Match both "connected" and "connected primary" patterns
+        if [[ $line =~ ^([^[:space:]]+)[[:space:]]+connected([[:space:]]+primary)?[[:space:]]+([0-9]+x[0-9]+\+[0-9]+\+[0-9]+) ]]; then
             local name="${BASH_REMATCH[1]}"
-            local geometry="${BASH_REMATCH[2]}"
+            local geometry="${BASH_REMATCH[3]}"  # Note: index 3 because of the optional primary group
             # Parse geometry: WIDTHxHEIGHT+X+Y
             if [[ $geometry =~ ^([0-9]+)x([0-9]+)\+([0-9]+)\+([0-9]+)$ ]]; then
                 local w="${BASH_REMATCH[1]}"
@@ -75,24 +76,31 @@ get_primary_monitor() {
     echo "${MONITORS[0]}"
 }
 
+
 # Get which monitor a window is primarily on
 get_window_monitor() {
     local window_id="$1"
+
+    # IMPORTANT: Must ensure MONITORS array is populated before using it
+    if [[ ${#MONITORS[@]} -eq 0 ]]; then
+        get_screen_info
+    fi
+
     local geom=$(get_window_geometry "$window_id")
     IFS=',' read -r wx wy ww wh <<< "$geom"
-    
+
     local best_monitor=""
     local best_overlap=0
-    
+
     for monitor in "${MONITORS[@]}"; do
         IFS=':' read -r name mx my mw mh <<< "$monitor"
-        
+
         # Calculate overlap area
         local overlap_x1=$((wx > mx ? wx : mx))
         local overlap_y1=$((wy > my ? wy : my))
         local overlap_x2=$(((wx + ww) < (mx + mw) ? (wx + ww) : (mx + mw)))
         local overlap_y2=$(((wy + wh) < (my + mh) ? (wy + wh) : (my + mh)))
-        
+
         if [[ $overlap_x2 -gt $overlap_x1 && $overlap_y2 -gt $overlap_y1 ]]; then
             local overlap_area=$(((overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)))
             if [[ $overlap_area -gt $best_overlap ]]; then
@@ -101,7 +109,7 @@ get_window_monitor() {
             fi
         fi
     done
-    
+
     # If no overlap found, use first monitor
     [[ -z "$best_monitor" ]] && best_monitor="${MONITORS[0]}"
     echo "$best_monitor"
@@ -118,18 +126,18 @@ get_monitor_layout_area() {
     # Get the actual primary monitor (where panel is located)
     local primary_monitor=$(get_primary_monitor)
     IFS=':' read -r primary_name primary_x primary_y primary_w primary_h <<< "$primary_monitor"
-    
+
     local usable_x=$mx
     local usable_y=$my
     local usable_w=$mw
     local usable_h
-    
+
     # Check if this monitor is the primary monitor (has the panel)
     local is_primary=false
     if [[ "$name" == "$primary_name" ]]; then
         is_primary=true
     fi
-    
+
     # Handle panel space - only subtract panel height from primary monitor
     if [[ "$panel_autohide" == "true" ]]; then
         # Panel auto-hides - use full monitor space (windows can overlap panel area)

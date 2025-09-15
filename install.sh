@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installation script for window positioning tool in Qubes OS dom0
+# Installation script for window positioning tool
 
 set -euo pipefail
 
@@ -35,8 +35,8 @@ echo "Debug: USER=$USER, SUDO_USER=${SUDO_USER:-'not set'}, REAL_USER=$REAL_USER
 echo "Debug: HOME=$HOME, REAL_HOME=$REAL_HOME"
 echo "Debug: CONFIG_DIR will be: $CONFIG_DIR"
 
-echo "Window Positioning Tool Installer for Qubes OS dom0"
-echo "=================================================="
+echo "Window Positioning Tool Installer"
+echo "=================================="
 echo "Installing for user: $REAL_USER (home: $REAL_HOME)"
 echo "Config will be created at: $CONFIG_DIR"
 echo "Libraries will be installed to: $INSTALL_LIB_DIR"
@@ -48,18 +48,16 @@ rm -f /tmp/place-window-wrapper
 rm -f /tmp/place-window*
 echo "✓ Temporary files cleaned"
 
-# Check if running in dom0
-if [[ ! -f /proc/xen/capabilities ]] || ! grep -q "control_d" /proc/xen/capabilities 2>/dev/null; then
-    echo "Warning: This doesn't appear to be dom0. This tool is designed for dom0 only."
-    read -p "Continue anyway? [y/N]: " confirm
-    [[ "$confirm" != [yY] ]] && exit 1
+# Optional: Check if running in Qubes dom0
+if [[ -f /proc/xen/capabilities ]] && grep -q "control_d" /proc/xen/capabilities 2>/dev/null; then
+    echo "Note: Detected Qubes OS dom0 environment."
 fi
 
 # Check for required tools
 echo "Checking for required tools..."
 missing_tools=()
 
-for tool in xdotool wmctrl; do
+for tool in xdotool wmctrl xwininfo; do
     if ! command -v "$tool" &> /dev/null; then
         missing_tools+=("$tool")
     fi
@@ -67,11 +65,59 @@ done
 
 if [[ ${#missing_tools[@]} -gt 0 ]]; then
     echo "Missing required tools: ${missing_tools[*]}"
-    echo "Installing via qubes-dom0-update..."
-    
-    read -p "Install missing tools? [Y/n]: " confirm
+    echo ""
+
+    # Detect package manager and provide appropriate command
+    if command -v apt-get &> /dev/null; then
+        echo "To install on Debian/Ubuntu:"
+        echo "  sudo apt-get install ${missing_tools[*]}"
+    elif command -v dnf &> /dev/null; then
+        echo "To install on Fedora/RHEL:"
+        echo "  sudo dnf install ${missing_tools[*]}"
+    elif command -v yum &> /dev/null; then
+        echo "To install on older RHEL/CentOS:"
+        echo "  sudo yum install ${missing_tools[*]}"
+    elif command -v pacman &> /dev/null; then
+        echo "To install on Arch Linux:"
+        echo "  sudo pacman -S ${missing_tools[*]}"
+    elif command -v zypper &> /dev/null; then
+        echo "To install on openSUSE:"
+        echo "  sudo zypper install ${missing_tools[*]}"
+    elif command -v qubes-dom0-update &> /dev/null; then
+        echo "To install in Qubes dom0:"
+        echo "  sudo qubes-dom0-update ${missing_tools[*]}"
+    else
+        echo "Please install the missing tools using your package manager."
+    fi
+
+    echo ""
+    read -p "Attempt automatic installation? [Y/n]: " confirm
     if [[ "$confirm" != [nN] ]]; then
-        sudo qubes-dom0-update "${missing_tools[@]}"
+        # Try to install based on available package manager
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y "${missing_tools[@]}"
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y "${missing_tools[@]}"
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y "${missing_tools[@]}"
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S --noconfirm "${missing_tools[@]}"
+        elif command -v zypper &> /dev/null; then
+            sudo zypper install -y "${missing_tools[@]}"
+        elif command -v qubes-dom0-update &> /dev/null; then
+            sudo qubes-dom0-update "${missing_tools[@]}"
+        else
+            echo "Cannot automatically install. Please install manually and run installer again."
+            exit 1
+        fi
+
+        # Verify installation
+        for tool in "${missing_tools[@]}"; do
+            if ! command -v "$tool" &> /dev/null; then
+                echo "Failed to install $tool. Please install manually."
+                exit 1
+            fi
+        done
     else
         echo "Cannot proceed without required tools."
         exit 1
@@ -97,7 +143,7 @@ done
 echo "Creating main executable..."
 cat << 'EOF' > /tmp/place-window-wrapper
 #!/usr/bin/env bash
-# place-window: Position windows in dom0 with mouse selection or window ID
+# place-window: Position windows with mouse selection or window ID
 # This is a wrapper that sets up the library path
 
 set -euo pipefail
@@ -245,7 +291,7 @@ cat > "$AUTOSTART_DIR/window-positioning.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=Window Positioning Daemon
-Comment=Automatic window tiling daemon for QubesOS dom0
+Comment=Automatic window tiling daemon
 Exec=/usr/local/bin/place-window watch daemon
 Icon=preferences-system-windows
 Categories=System;
