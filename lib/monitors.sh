@@ -89,6 +89,12 @@ get_window_monitor() {
     local geom=$(get_window_geometry "$window_id")
     IFS=',' read -r wx wy ww wh <<< "$geom"
 
+    # Check if we got valid geometry
+    if [[ -z "$geom" || "$wx" == "" || "$wy" == "" ]]; then
+        echo ""  # Return empty string for invalid geometry
+        return 1
+    fi
+
     local best_monitor=""
     local best_overlap=0
 
@@ -110,8 +116,13 @@ get_window_monitor() {
         fi
     done
 
-    # If no overlap found, use first monitor
-    [[ -z "$best_monitor" ]] && best_monitor="${MONITORS[0]}"
+    # If no overlap found, return empty instead of defaulting to primary monitor
+    # This prevents incorrect assignment during daemon startup
+    if [[ -z "$best_monitor" ]]; then
+        echo ""  # Return empty string instead of defaulting to primary monitor
+        return 1
+    fi
+
     echo "$best_monitor"
 }
 

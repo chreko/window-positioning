@@ -905,13 +905,13 @@ apply_meta_maximize_single_monitor() {
     local monitor="$1"
     shift
     local window_list=("$@")
-    
+
     local layout_area=$(get_monitor_layout_area "$monitor")
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
     local gap=$GAP
     local decoration_h=$DECORATION_HEIGHT
     local decoration_w=$DECORATION_WIDTH
-    
+
     # Maximize first window with decoration space, minimize others
     local final_w=$((usable_w - gap * 2 - decoration_w))
     local final_h=$((usable_h - gap * 2 - decoration_h))
@@ -1287,9 +1287,9 @@ auto_layout_and_reset_monitor() {
 reapply_saved_layout_for_monitor() {
     local workspace="$1"
     local monitor="$2"  # Full monitor string
-    
+
     IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-    
+
     # Get current windows on this monitor
     local master_windows=()
     local window_list

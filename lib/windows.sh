@@ -253,8 +253,9 @@ get_visible_windows() {
         
         # If monitor specified, check if window is on that monitor
         if [[ -n "$monitor_name" ]]; then
-            local window_mon=$(get_window_monitor "$id" | cut -d: -f1)
-            [[ "$window_mon" != "$monitor_name" ]] && continue
+            local window_mon=$(get_window_monitor "$id" 2>/dev/null | cut -d: -f1)
+            # Skip windows where monitor detection failed (empty result)
+            [[ -z "$window_mon" || "$window_mon" != "$monitor_name" ]] && continue
         fi
         
         echo "$id"
