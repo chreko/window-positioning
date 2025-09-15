@@ -406,6 +406,25 @@ case "${1:-}" in
                 echo "  Decoration width: ${DECORATION_WIDTH}px"
                 echo "  Min width: ${MIN_WIDTH}px"
                 echo "  Min height: ${MIN_HEIGHT}px"
+
+                # Show detected panels information
+                echo ""
+                echo "Detected XFCE panels:"
+                detected_panels=()
+                readarray -t detected_panels < <(detect_xfce_panels)
+                if [[ ${#detected_panels[@]} -eq 0 || -z "${detected_panels[0]}" ]]; then
+                    echo "  No panels detected (using legacy settings)"
+                else
+                    for panel_info in "${detected_panels[@]}"; do
+                        if [[ -z "$panel_info" ]]; then continue; fi
+                        IFS=':' read -r panel_id panel_x panel_y panel_size panel_placement panel_hides <<< "$panel_info"
+                        echo "  Panel ${panel_id}: ${panel_size}px ${panel_placement} at (${panel_x},${panel_y}) [hides: ${panel_hides}]"
+                    done
+                fi
+                ;;
+            refresh-panels)
+                refresh_panel_cache
+                echo "Panel cache refreshed successfully"
                 ;;
             detect-decorations)
                 auto_detect_decorations
@@ -416,6 +435,7 @@ case "${1:-}" in
                 echo "  place-window config panel [pixels]      Set/show panel height"
                 echo "  place-window config autohide [true/false] Set/show panel auto-hide"
                 echo "  place-window config show                Show all settings"
+                echo "  place-window config refresh-panels      Refresh dynamic panel detection cache"
                 echo "  place-window config detect-decorations  Auto-detect window decorations"
                 ;;
         esac

@@ -126,46 +126,184 @@ get_window_monitor() {
     echo "$best_monitor"
 }
 
-# Get monitor-specific layout area (clean - only accounts for panel space)
+# Global cache variables for panel detection
+CACHED_PANELS=()
+CACHED_PANELS_TIMESTAMP=0
+PANEL_CACHE_DURATION=300  # Cache for 5 minutes
+
+# Detect all XFCE panels and their properties (with caching)
+detect_xfce_panels() {
+    local current_time=$(date +%s)
+    local cache_age=$((current_time - CACHED_PANELS_TIMESTAMP))
+
+    # Return cached results if cache is still valid
+    if [[ $cache_age -lt $PANEL_CACHE_DURATION && ${#CACHED_PANELS[@]} -gt 0 ]]; then
+        printf '%s\n' "${CACHED_PANELS[@]}"
+        return 0
+    fi
+
+    # Cache is stale or empty - refresh panel detection
+    local panels=()
+
+    # Query all panels from XFCE configuration
+    if command -v xfconf-query >/dev/null 2>&1; then
+        local panel_ids
+        panel_ids=$(xfconf-query -c xfce4-panel -p /panels 2>/dev/null | grep -E '^[0-9]+$' || echo "")
+
+        for panel_id in $panel_ids; do
+            local position size autohide
+            position=$(xfconf-query -c xfce4-panel -p "/panels/panel-${panel_id}/position" 2>/dev/null || echo "")
+            size=$(xfconf-query -c xfce4-panel -p "/panels/panel-${panel_id}/size" 2>/dev/null || echo "30")
+            autohide=$(xfconf-query -c xfce4-panel -p "/panels/panel-${panel_id}/autohide-behavior" 2>/dev/null || echo "0")
+
+            if [[ -n "$position" ]]; then
+                # Parse position: p=N;x=X;y=Y
+                if [[ $position =~ p=([0-9]+)\;x=([0-9]+)\;y=([0-9]+) ]]; then
+                    local pos_code="${BASH_REMATCH[1]}"
+                    local panel_x="${BASH_REMATCH[2]}"
+                    local panel_y="${BASH_REMATCH[3]}"
+
+                    # Determine panel placement from position code
+                    local placement=""
+                    case $pos_code in
+                        1|2|3) placement="bottom" ;;    # Bottom Left/Center/Right
+                        4|5|6) placement="top" ;;       # Top Left/Center/Right
+                        9|10|11) placement="left" ;;    # Left Top/Center/Bottom
+                        12|13|14) placement="right" ;;  # Right Top/Center/Bottom
+                        *) placement="top" ;;           # Default fallback
+                    esac
+
+                    # Convert autohide (0=never, 1=intelligently, 2=always)
+                    local hides="false"
+                    if [[ "$autohide" != "0" ]]; then
+                        hides="true"
+                    fi
+
+                    panels+=("${panel_id}:${panel_x}:${panel_y}:${size}:${placement}:${hides}")
+                fi
+            fi
+        done
+    fi
+
+    # Update cache
+    CACHED_PANELS=("${panels[@]}")
+    CACHED_PANELS_TIMESTAMP=$current_time
+
+    printf '%s\n' "${panels[@]}"
+}
+
+# Force refresh of panel cache (useful for testing or manual refresh)
+refresh_panel_cache() {
+    CACHED_PANELS=()
+    CACHED_PANELS_TIMESTAMP=0
+    detect_xfce_panels >/dev/null
+}
+
+# Find which monitor contains a panel based on coordinates
+get_panel_monitor() {
+    local panel_x="$1" panel_y="$2"
+
+    # IMPORTANT: Must ensure MONITORS array is populated
+    if [[ ${#MONITORS[@]} -eq 0 ]]; then
+        get_screen_info
+    fi
+
+    for monitor in "${MONITORS[@]}"; do
+        IFS=':' read -r name mx my mw mh <<< "$monitor"
+
+        # Check if panel coordinates are within this monitor
+        if [[ $panel_x -ge $mx && $panel_x -lt $((mx + mw)) &&
+              $panel_y -ge $my && $panel_y -lt $((my + mh)) ]]; then
+            echo "$monitor"
+            return 0
+        fi
+    done
+
+    # Fallback: return primary monitor if no exact match
+    get_primary_monitor
+}
+
+# Get monitor-specific layout area with dynamic panel detection
 get_monitor_layout_area() {
     local monitor="$1"
     IFS=':' read -r name mx my mw mh <<< "$monitor"
-    
-    local panel_height=$PANEL_HEIGHT
-    local panel_autohide="${PANEL_AUTOHIDE:-false}"
-    
-    # Get the actual primary monitor (where panel is located)
-    local primary_monitor=$(get_primary_monitor)
-    IFS=':' read -r primary_name primary_x primary_y primary_w primary_h <<< "$primary_monitor"
 
     local usable_x=$mx
     local usable_y=$my
     local usable_w=$mw
-    local usable_h
+    local usable_h=$mh
 
-    # Check if this monitor is the primary monitor (has the panel)
-    local is_primary=false
-    if [[ "$name" == "$primary_name" ]]; then
-        is_primary=true
-    fi
+    # Detect all XFCE panels
+    local detected_panels
+    readarray -t detected_panels < <(detect_xfce_panels)
 
-    # Handle panel space - only subtract panel height from primary monitor
-    if [[ "$panel_autohide" == "true" ]]; then
-        # Panel auto-hides - use full monitor space (windows can overlap panel area)
-        # No height reduction needed since panel hides automatically
-        usable_h=$mh
-    else
-        # Panel reserves space - start windows below it and reduce height
-        if [[ "$is_primary" == "true" ]]; then
-            # Panel at top reserves space, so start windows below it
+    # Apply panel space reductions for panels on this monitor
+    for panel_info in "${detected_panels[@]}"; do
+        if [[ -z "$panel_info" ]]; then continue; fi
+
+        IFS=':' read -r panel_id panel_x panel_y panel_size panel_placement panel_hides <<< "$panel_info"
+
+        # Skip if panel auto-hides
+        if [[ "$panel_hides" == "true" ]]; then
+            continue
+        fi
+
+        # Check if this panel is on the current monitor
+        local panel_monitor
+        panel_monitor=$(get_panel_monitor "$panel_x" "$panel_y")
+        IFS=':' read -r panel_monitor_name _ _ _ _ <<< "$panel_monitor"
+
+        if [[ "$panel_monitor_name" == "$name" ]]; then
+            # Apply panel space reduction based on placement
+            case "$panel_placement" in
+                "top")
+                    if [[ $panel_y -le $my ]]; then
+                        # Panel at top of monitor
+                        usable_y=$((usable_y + panel_size))
+                        usable_h=$((usable_h - panel_size))
+                    fi
+                    ;;
+                "bottom")
+                    if [[ $panel_y -ge $((my + mh - panel_size)) ]]; then
+                        # Panel at bottom of monitor
+                        usable_h=$((usable_h - panel_size))
+                    fi
+                    ;;
+                "left")
+                    if [[ $panel_x -le $mx ]]; then
+                        # Panel at left of monitor
+                        usable_x=$((usable_x + panel_size))
+                        usable_w=$((usable_w - panel_size))
+                    fi
+                    ;;
+                "right")
+                    if [[ $panel_x -ge $((mx + mw - panel_size)) ]]; then
+                        # Panel at right of monitor
+                        usable_w=$((usable_w - panel_size))
+                    fi
+                    ;;
+            esac
+        fi
+    done
+
+    # Fallback to legacy behavior if no panels detected
+    if [[ ${#detected_panels[@]} -eq 0 || -z "${detected_panels[0]}" ]]; then
+        local panel_height=$PANEL_HEIGHT
+        local panel_autohide="${PANEL_AUTOHIDE:-false}"
+
+        # Get the primary monitor for legacy behavior
+        local primary_monitor
+        primary_monitor=$(get_primary_monitor)
+        IFS=':' read -r primary_name _ _ _ _ <<< "$primary_monitor"
+
+        # Apply legacy panel logic only to primary monitor
+        if [[ "$name" == "$primary_name" && "$panel_autohide" != "true" ]]; then
+            # Legacy: assume panel at top of primary monitor
             usable_y=$((my + panel_height))
             usable_h=$((mh - panel_height))
-        else
-            # No panel on this monitor - use full monitor space
-            usable_h=$mh
         fi
     fi
-    
+
     echo "$usable_x:$usable_y:$usable_w:$usable_h"
 }
 
