@@ -224,10 +224,19 @@ get_visible_windows() {
                 pattern=$(echo "$pattern" | sed 's/\([[\\.^$()+{}|]\)/\\\1/g')
                 # Now convert wildcards
                 pattern=$(echo "$pattern" | sed 's/\*/\.\*/g; s/\?/\./g')
-                # If no wildcards present, make it an exact match with anchors
+
+                # Properly anchor patterns based on wildcard position
                 if [[ "$app" != *"*"* && "$app" != *"?"* ]]; then
+                    # No wildcards - exact match
                     pattern="^${pattern}$"
+                elif [[ "$app" == *"*" && "$app" != "*"* ]]; then
+                    # Ends with wildcard - anchor start
+                    pattern="^${pattern}"
+                elif [[ "$app" == "*"* && "$app" != *"*" ]]; then
+                    # Starts with wildcard - anchor end
+                    pattern="${pattern}$"
                 fi
+                # If wildcards on both ends or in middle, no anchoring (matches anywhere)
                 
                 # Apply case sensitivity and check both class and title
                 local match=false
