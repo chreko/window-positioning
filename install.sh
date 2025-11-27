@@ -363,6 +363,55 @@ else
     echo "ERROR: Uninstaller file not found after creation!"
 fi
 
+# Install keyboard shortcuts (optional)
+echo ""
+echo "Would you like to install keyboard shortcuts for window positioning?"
+echo "  Super+1-4    : Window layouts"
+echo "  Super+Up/Down: Cycle windows"
+echo "  Super+Left/Right: Adjust master size"
+echo "  Super+w      : Toggle watch mode"
+echo "  Super+s      : Swap windows"
+echo "  Super+0      : Auto-arrange"
+echo ""
+read -p "Install keyboard shortcuts? [Y/n]: " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    if command -v xfconf-query &> /dev/null; then
+        # xfconf-query needs user's D-Bus session - works when script is run without sudo
+        # If running as root (via sudo), warn user to run without sudo
+        if [[ $EUID -eq 0 ]]; then
+            echo "⚠ Cannot install keyboard shortcuts when running as root"
+            echo "  xfconf-query needs your D-Bus session. Run installer without sudo,"
+            echo "  or add shortcuts manually via Settings > Keyboard > Application Shortcuts"
+        else
+            set_shortcut() {
+                local key="$1"
+                local cmd="$2"
+                xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$key" --reset 2>/dev/null || true
+                xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$key" -n -t string -s "$cmd"
+            }
+            echo "Installing keyboard shortcuts..."
+            set_shortcut "<Super>1" "place-window minimize-others"
+            set_shortcut "<Super>2" "place-window master vertical 75"
+            set_shortcut "<Super>3" "place-window master center"
+            set_shortcut "<Super>4" "place-window master horizontal 50"
+            set_shortcut "<Super>Up" "place-window cycle"
+            set_shortcut "<Super>Down" "place-window cycle counter-clockwise"
+            set_shortcut "<Super>Left" "place-window master decrease"
+            set_shortcut "<Super>Right" "place-window master increase"
+            set_shortcut "<Super>w" "place-window watch toggle"
+            set_shortcut "<Super>s" "place-window swap"
+            set_shortcut "<Super>0" "place-window auto"
+            echo "✓ Keyboard shortcuts installed"
+        fi
+    else
+        echo "⚠ xfconf-query not found, skipping keyboard shortcuts"
+        echo "  Add shortcuts manually - see $CONFIG_DIR/keyboard-shortcuts.txt"
+    fi
+else
+    echo "✓ Skipped keyboard shortcuts (see $CONFIG_DIR/keyboard-shortcuts.txt)"
+fi
+
 echo ""
 echo "Installation Complete!"
 echo "====================="

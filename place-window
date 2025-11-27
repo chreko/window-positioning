@@ -276,14 +276,8 @@ case "${1:-}" in
                 echo "✓ Daemon stopped"
                 ;;
             status)
-                if is_daemon_running; then
-                    echo "✓ Watch mode is running (XDG autostart)"
-                    echo "PID: $(get_daemon_pid)"
-                    echo "Autostart: $([ -f ~/.config/autostart/window-positioning.desktop ] && echo 'enabled' || echo 'disabled')"
-                else
-                    echo "✗ Watch mode is not running"
-                    echo "Start with: place-window watch start"
-                fi
+                show_daemon_status
+                echo "Autostart: $([ -f ~/.config/autostart/window-positioning.desktop ] && echo 'enabled' || echo 'disabled')"
                 ;;
             enable)
                 if [ -f ~/.config/autostart/window-positioning.desktop ]; then
@@ -328,6 +322,12 @@ case "${1:-}" in
             toggle)
                 toggle_daemon
                 ;;
+            on)
+                enable_daemon_auto_layout
+                ;;
+            off)
+                disable_daemon_auto_layout
+                ;;
             daemon)
                 # Internal daemon mode - called by XDG autostart or manually
                 DAEMON_MODE=true
@@ -337,6 +337,8 @@ case "${1:-}" in
                 echo "Watch mode commands (XDG autostart daemon):"
                 echo "  place-window watch start     Start the daemon"
                 echo "  place-window watch stop      Stop the daemon"
+                echo "  place-window watch on        Enable auto-layout (daemon must be running)"
+                echo "  place-window watch off       Disable auto-layout (daemon keeps running)"
                 echo "  place-window watch toggle    Toggle auto-layout on/off (daemon keeps running)"
                 echo "  place-window watch restart   Restart the daemon"
                 echo "  place-window watch status    Check daemon status and auto-layout state"
@@ -481,8 +483,10 @@ Watch mode (automatic tiling daemon):
   place-window watch start        Start automatic tiling daemon
   place-window watch stop         Stop the daemon
   place-window watch status       Check daemon status
-  place-window watch toggle       Toggle daemon on/off
-  
+  place-window watch on           Enable auto-layout (daemon must be running)
+  place-window watch off          Disable auto-layout (daemon keeps running)
+  place-window watch toggle       Toggle auto-layout on/off
+
   Watch mode monitors window changes and automatically applies the last-used
   layout per workspace. Responds to window creation, minimize, and maximize.
 

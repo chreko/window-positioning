@@ -163,16 +163,58 @@ toggle_auto_layout() {
         echo "Auto-layout disabled - daemon enters idle mode for maximum CPU savings"
         echo "All window monitoring and processing paused until re-enabled"
     else
-        enable_auto_layout  
+        enable_auto_layout
         echo "Auto-layout enabled - daemon will automatically apply layouts on window changes"
         echo "Window monitoring and layout processing resumed"
     fi
-    
+
     # Send SIGUSR2 to daemon to wake it from idle sleep
     local daemon_pid=$(get_daemon_pid)
     if [[ -n "$daemon_pid" ]]; then
         kill -USR2 "$daemon_pid" 2>/dev/null || true
     fi
+}
+
+# Enable auto-layout directly (daemon must be running)
+enable_daemon_auto_layout() {
+    if ! is_daemon_running; then
+        echo "Daemon is not running. Start with: place-window watch start"
+        return 1
+    fi
+
+    if is_auto_layout_enabled; then
+        echo "Auto-layout is already enabled"
+        return 0
+    fi
+
+    enable_auto_layout
+    echo "Auto-layout enabled - daemon will automatically apply layouts on window changes"
+    echo "Window monitoring and layout processing resumed"
+
+    # Send SIGUSR2 to daemon to wake it from idle sleep
+    local daemon_pid=$(get_daemon_pid)
+    if [[ -n "$daemon_pid" ]]; then
+        kill -USR2 "$daemon_pid" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# Disable auto-layout directly (daemon keeps running)
+disable_daemon_auto_layout() {
+    if ! is_daemon_running; then
+        echo "Daemon is not running. Start with: place-window watch start"
+        return 1
+    fi
+
+    if ! is_auto_layout_enabled; then
+        echo "Auto-layout is already disabled"
+        return 0
+    fi
+
+    disable_auto_layout
+    echo "Auto-layout disabled - daemon enters idle mode for maximum CPU savings"
+    echo "All window monitoring and processing paused until re-enabled"
+    return 0
 }
 
 # Combined daemon that handles both window monitoring and IPC commands
@@ -486,22 +528,28 @@ toggle_daemon() {
         echo "Daemon is not running. Start with: place-window watch start"
         return 1
     fi
-    
-    toggle_auto_layout
+
+    if is_auto_layout_enabled; then
+        disable_daemon_auto_layout
+    else
+        enable_daemon_auto_layout
+    fi
 }
 
 # Show daemon status
 show_daemon_status() {
     if is_daemon_running; then
-        echo "Watch mode is running (PID: $(get_daemon_pid))"
+        echo "Watch mode: RUNNING (PID: $(get_daemon_pid))"
         if is_auto_layout_enabled; then
-            echo "Auto-layout: ENABLED (daemon will apply layouts automatically)"
+            echo "Auto-layout: ON (actively monitoring and applying layouts)"
         else
-            echo "Auto-layout: DISABLED (daemon in idle mode - all processing paused for max CPU savings)"
+            echo "Auto-layout: OFF (daemon idle - zero CPU usage)"
         fi
+        return 0
     else
-        echo "Watch mode is not running"
+        echo "Watch mode: NOT RUNNING"
         echo "Start with: place-window watch start"
+        return 1
     fi
 }
 
