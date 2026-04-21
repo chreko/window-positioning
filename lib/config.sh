@@ -75,6 +75,11 @@ WINDOW_ORDER_STRATEGY=position
 #   Application Finder - XFCE app finder
 #   Save*, Open*, Save As* - File dialogs
 IGNORED_APPS="About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes,cs:Unlock Keyring"
+
+# Watch mode: auto-layout on daemon start
+# When true, the daemon automatically applies layouts when windows change
+# When false, the daemon starts in idle mode (toggle with: place-window watch on)
+WATCH_AUTO_LAYOUT=true
 EOF
     fi
 
@@ -117,6 +122,10 @@ load_config() {
     IGNORED_APPS=${IGNORED_APPS:-"About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes"}
     validate_ignored_apps
     export IGNORED_APPS
+
+    # Watch mode auto-layout default
+    WATCH_AUTO_LAYOUT=${WATCH_AUTO_LAYOUT:-true}
+    export WATCH_AUTO_LAYOUT
 }
 
 # Validate IGNORED_APPS syntax
