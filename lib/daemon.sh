@@ -1060,12 +1060,14 @@ apply_meta_grid_single_monitor() {
     local decoration_w=$DECORATION_WIDTH
     local gap_vertical=$((gap + decoration_h))  # Gap + decoration for vertical spacing
     
-    # Account for gaps and decorations between rows
-    local available_w=$((usable_w - gap * (cols + 1)))  # Left, right, and between columns
-    local available_h=$((usable_h - gap * 2 - gap_vertical * (rows - 1) - decoration_h))  # Top/bottom gaps, vertical gaps, decoration
+    # Account for gaps and decorations between rows/columns
+    # Width: left gap + right gap + gaps between columns
+    local available_w=$((usable_w - gap * 2 - gap * (cols - 1)))
+    # Height: top gap + bottom gap + gaps between rows + decoration height
+    local available_h=$((usable_h - gap * 2 - gap_vertical * (rows - 1)))
     local cell_w=$((available_w / cols))
     local cell_h=$((available_h / rows))
-    
+
     for ((i=0; i<num_windows; i++)); do
         local col=$((i % cols))
         local row=$((i / cols))
@@ -1110,13 +1112,13 @@ apply_meta_topbar_main_single_monitor() {
     
     # Position main window (first window) - takes full width at bottom
     apply_geometry "${window_list[0]}" $final_x $main_y $final_w $main_h
-    
+
     # Position topbar windows (all except first) in columns
     local topbar_windows=$((num_windows - 1))
     if [[ $topbar_windows -gt 0 ]]; then
         local available_topbar_w=$((final_w - gap * (topbar_windows - 1)))
         local topbar_column_w=$((available_topbar_w / topbar_windows))
-        
+
         for ((i=1; i<num_windows; i++)); do
             local topbar_x=$((final_x + (i - 1) * (topbar_column_w + gap)))
             apply_geometry "${window_list[i]}" $topbar_x $final_y $topbar_column_w $topbar_h
