@@ -6,9 +6,23 @@
 # Provides core window detection and ordering capabilities
 
 # Interactive window selection
+# Rejects desktop/dock/panel windows and re-prompts, to prevent the caller
+# from resizing the root or xfdesktop window and breaking the background.
 pick_window() {
-    echo "Click on a window to select it..." >&2
-    xdotool selectwindow
+    local id type
+    while true; do
+        echo "Click on a window to select it..." >&2
+        id=$(xdotool selectwindow 2>/dev/null) || return 1
+        [[ -z "$id" ]] && return 1
+
+        type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
+        if echo "$type" | grep -qE "DESKTOP|DOCK|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+            echo "Skipped: that is a desktop/panel, not a manageable window. Try again." >&2
+            continue
+        fi
+        echo "$id"
+        return 0
+    done
 }
 
 # Get current window geometry (frame coordinates)
