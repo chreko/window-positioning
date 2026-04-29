@@ -232,13 +232,13 @@ watch_daemon_with_ipc() {
     : "${PID_FILE:=$DAEMON_PIPE_DIR/daemon.pid}"
     echo $$ > "$PID_FILE"
 
-    # Auto-layout default: respect WATCH_AUTO_LAYOUT config setting
-    if [[ ! -f "$AUTO_LAYOUT_ENABLED_FILE" ]]; then
-        if [[ "${WATCH_AUTO_LAYOUT:-true}" == "true" ]]; then
-            enable_auto_layout
-        else
-            echo "$(date): Auto-layout disabled by config (WATCH_AUTO_LAYOUT=false)"
-        fi
+    # Auto-layout state: WATCH_AUTO_LAYOUT is authoritative on each daemon start.
+    # Runtime `watch on`/`watch off` still toggles the marker, but the config wins
+    # on the next daemon restart.
+    if [[ "${WATCH_AUTO_LAYOUT:-true}" == "true" ]]; then
+        enable_auto_layout
+    else
+        disable_auto_layout
     fi
 
     # Initialize monitor information for daemon functions
