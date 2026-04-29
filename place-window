@@ -116,6 +116,11 @@ case "${1:-}" in
             send_daemon_command "auto"
         fi
         ;;
+    reapply)
+        # Reapply the currently saved layout for the current workspace's monitors
+        # (preserves saved layout choice; useful after manual resize)
+        send_daemon_command "reapply"
+        ;;
     resize)
         # Simultaneous resize with adjacent windows
         case "${2:-}" in
@@ -466,8 +471,9 @@ Basic Usage:
   place-window <X> <Y> <W> <H>    Custom coordinates
 
 Auto-layout system:
-  place-window auto               Auto-arrange current monitor
+  place-window auto               Auto-arrange current monitor (resets saved layout)
   place-window auto --all         Auto-arrange all monitors
+  place-window reapply            Reapply saved layout for current workspace
 
 Master-stack layouts:
   place-window master vertical [%]    Master on left (current monitor)

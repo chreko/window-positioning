@@ -402,6 +402,7 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             set_shortcut "<Super>w" "place-window watch toggle"
             set_shortcut "<Super>s" "place-window swap"
             set_shortcut "<Super>0" "place-window auto"
+            set_shortcut "<Super>exclam" "place-window reapply"
             echo "✓ Keyboard shortcuts installed"
         fi
     else

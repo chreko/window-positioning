@@ -697,6 +697,9 @@ handle_daemon_command() {
         "auto --all")
             response=$(auto_layout_all_monitors 2>&1)
             ;;
+        "reapply")
+            response=$(apply_workspace_layout 2>&1)
+            ;;
         master*)
             # Parse master command: "master vertical 60", "master center 50", "master increase/decrease"
             read -ra cmd_parts <<< "$command"
