@@ -35,7 +35,7 @@ declare -Ag WINDOW_DIRTY WINDOW_GEN WINDOW_COUNT 2>/dev/null || true
 declare -Ag HOLD_UNTIL_MS 2>/dev/null || true
 
 # Monitor detection caching for CPU optimization
-SCREEN_INFO_CACHE=""
+declare -ag SCREEN_INFO_CACHE=()
 SCREEN_INFO_CACHE_TIME=0
 
 # Debouncing for rapid changes
@@ -86,9 +86,9 @@ monitor_should_apply() {
 # Cached screen info for CPU optimization - monitors rarely change
 get_screen_info_cached() {
     local now=$(date +%s)
-    if [[ -z "$SCREEN_INFO_CACHE" ]] || (( now - SCREEN_INFO_CACHE_TIME > 30 )); then
+    if (( ${#SCREEN_INFO_CACHE[@]} == 0 )) || (( now - SCREEN_INFO_CACHE_TIME > 30 )); then
         get_screen_info  # Calls original function from monitors.sh
-        SCREEN_INFO_CACHE="$MONITORS"
+        SCREEN_INFO_CACHE=("${MONITORS[@]}")
         SCREEN_INFO_CACHE_TIME=$now
         echo "$(date): Monitor info refreshed (cache TTL: 30s)"
     else
@@ -817,15 +817,18 @@ master_stack_layout() {
             
             # Temporarily override current monitor context for the single-monitor function
             local original_monitor="$current_monitor"
-            
-            # Mock get_current_monitor to return this specific monitor
+
+            # Save and override get_current_monitor to return this specific monitor
+            local _saved_get_current_monitor
+            _saved_get_current_monitor="$(declare -f get_current_monitor)"
             get_current_monitor() { echo "$monitor"; }
-            
+
             # Apply master-stack layout to this monitor using the single-monitor function
             master_stack_layout_current_monitor "$orientation" "$percentage"
-            
+
             # Restore original get_current_monitor function
             unset -f get_current_monitor
+            [[ -n "$_saved_get_current_monitor" ]] && eval "$_saved_get_current_monitor"
             
             monitors_applied=$((monitors_applied + 1))
         else

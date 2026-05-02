@@ -41,7 +41,7 @@ apply_preset() {
             local center_h=$((usable_h * 2 / 3 - gap * 2 - decoration_h))
             read -r center_w center_h <<< "$(ensure_minimum_size $center_w $center_h)"
             local center_x=$((usable_x + gap + (usable_w - center_w - gap * 2) / 2))
-            local center_y=$((usable_y + gap + (usable_h - center_h - gap * 2 - decoration) / 2))
+            local center_y=$((usable_y + gap + (usable_h - center_h - gap * 2 - decoration_h) / 2))
             apply_geometry "$id" $center_x $center_y $center_w $center_h
             ;;
         left) # Left half
