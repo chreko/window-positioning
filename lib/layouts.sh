@@ -32,6 +32,38 @@ init_layout_vars() {
     final_h=$((usable_h - gap * 2 - decoration_h))
 }
 
+# Split a strip into N windows separated by `gap_between`. Distributes the
+# integer-division remainder across the first windows so the last window's
+# trailing edge lands exactly on `start + total - 1`. Without this, a strip
+# of three 968-pixel sidebars rounds to 322 each (966 pixels used),
+# leaving a visible 2-pixel gap at the bottom.
+#
+# Usage: split_strip <total> <count> <gap_between> <out_sizes_array>
+# Result: out_sizes_array[0..count-1] holds each window's size; the sum of
+# sizes plus (count-1)*gap_between equals total exactly.
+split_strip() {
+    local total="$1" count="$2" gap_between="$3"
+    local -n _out="$4"
+    _out=()
+
+    if (( count <= 0 )); then
+        return
+    fi
+
+    local content=$(( total - gap_between * (count - 1) ))
+    local base=$(( content / count ))
+    local extra=$(( content - base * count ))   # 0 .. count-1
+
+    local i
+    for ((i = 0; i < count; i++)); do
+        if (( i < extra )); then
+            _out+=( $((base + 1)) )
+        else
+            _out+=( $base )
+        fi
+    done
+}
+
 #========================================
 # META-LAYOUT PRIMITIVES (single monitor)
 #========================================
@@ -62,12 +94,13 @@ apply_meta_columns_single_monitor() {
     init_layout_vars "$monitor"
 
     local num_windows=${#window_list[@]}
-    local available_w=$((final_w - gap * (num_windows - 1)))
-    local column_w=$((available_w / num_windows))
+    local widths=()
+    split_strip "$final_w" "$num_windows" "$gap" widths
 
+    local x=$final_x i
     for ((i=0; i<num_windows; i++)); do
-        local x=$((final_x + i * (column_w + gap)))
-        apply_geometry "${window_list[i]}" "$x" "$final_y" "$column_w" "$final_h"
+        apply_geometry "${window_list[i]}" "$x" "$final_y" "${widths[i]}" "$final_h"
+        x=$((x + widths[i] + gap))
     done
 }
 
@@ -100,12 +133,14 @@ apply_meta_main_sidebar_single_monitor() {
     # Sidebar windows stacked vertically, accounting for decorations between
     local sidebar_windows=$((num_windows - 1))
     local gap_vertical=$((gap + decoration_h))
-    local available_sidebar_h=$((final_h - gap_vertical * (sidebar_windows - 1)))
-    local sidebar_h=$((available_sidebar_h / sidebar_windows))
+    local heights=()
+    split_strip "$final_h" "$sidebar_windows" "$gap_vertical" heights
 
+    local y=$final_y i
     for ((i=1; i<num_windows; i++)); do
-        local sidebar_y=$((final_y + (i - 1) * (sidebar_h + gap_vertical)))
-        apply_geometry "${window_list[i]}" "$sidebar_x" "$sidebar_y" "$sidebar_w" "$sidebar_h"
+        local h=${heights[i-1]}
+        apply_geometry "${window_list[i]}" "$sidebar_x" "$y" "$sidebar_w" "$h"
+        y=$((y + h + gap_vertical))
     done
 }
 
@@ -124,20 +159,36 @@ apply_meta_grid_single_monitor() {
 
     local gap_vertical=$((gap + decoration_h))
 
-    # Gaps between cells: rows account for decoration_h, columns use raw gap.
-    # (DECORATION_WIDTH is typically 0 on dom0 XFCE so the asymmetry is
-    # invisible in practice; revisit if column spacing looks tight.)
-    local available_w=$((usable_w - gap * 2 - gap * (cols - 1)))
-    local available_h=$((usable_h - gap * 2 - gap_vertical * (rows - 1)))
-    local cell_w=$((available_w / cols))
-    local cell_h=$((available_h / rows))
+    # Distribute width across cols and height across rows, absorbing the
+    # integer-division remainder so the right and bottom edges align with
+    # the usable area. Columns use raw gap; rows use gap_vertical because
+    # row separators must clear the lower row's title bar.
+    local strip_w=$((usable_w - gap * 2))
+    local strip_h=$((usable_h - gap * 2))
+    local cell_widths=() cell_heights=()
+    split_strip "$strip_w" "$cols" "$gap" cell_widths
+    split_strip "$strip_h" "$rows" "$gap_vertical" cell_heights
+
+    # Pre-compute strip start offsets so each cell knows where its column
+    # and row begins.
+    local col_x=() row_y=()
+    local cx=$((usable_x + gap)) ci
+    for ((ci=0; ci<cols; ci++)); do
+        col_x+=("$cx")
+        cx=$((cx + cell_widths[ci] + gap))
+    done
+    local cy=$((usable_y + gap)) ri
+    for ((ri=0; ri<rows; ri++)); do
+        row_y+=("$cy")
+        cy=$((cy + cell_heights[ri] + gap_vertical))
+    done
 
     for ((i=0; i<num_windows; i++)); do
         local col=$((i % cols))
         local row=$((i / cols))
-        local x=$((usable_x + gap + col * (cell_w + gap)))
-        local y=$((usable_y + gap + row * (cell_h + gap_vertical)))
-        apply_geometry "${window_list[i]}" "$x" "$y" "$cell_w" "$cell_h"
+        apply_geometry "${window_list[i]}" \
+            "${col_x[col]}" "${row_y[row]}" \
+            "${cell_widths[col]}" "${cell_heights[row]}"
     done
 }
 
@@ -171,12 +222,14 @@ apply_meta_topbar_main_single_monitor() {
     # Topbar windows split the top row in equal columns
     local topbar_windows=$((num_windows - 1))
     if [[ $topbar_windows -gt 0 ]]; then
-        local available_topbar_w=$((final_w - gap * (topbar_windows - 1)))
-        local topbar_column_w=$((available_topbar_w / topbar_windows))
+        local topbar_widths=()
+        split_strip "$final_w" "$topbar_windows" "$gap" topbar_widths
 
+        local x=$final_x i
         for ((i=1; i<num_windows; i++)); do
-            local topbar_x=$((final_x + (i - 1) * (topbar_column_w + gap)))
-            apply_geometry "${window_list[i]}" "$topbar_x" "$final_y" "$topbar_column_w" "$topbar_h"
+            local w=${topbar_widths[i-1]}
+            apply_geometry "${window_list[i]}" "$x" "$final_y" "$w" "$topbar_h"
+            x=$((x + w + gap))
         done
     fi
 }
@@ -251,24 +304,28 @@ apply_meta_center_sidebar_single_monitor() {
     local left_sidebar_count=$((sidebar_windows / 2))
     local right_sidebar_count=$((sidebar_windows - left_sidebar_count))
 
+    local gap_vertical=$((gap + decoration_h))
+
     if [[ $left_sidebar_count -gt 0 ]]; then
-        local gap_vertical=$((gap + decoration_h))
-        local available_sidebar_h=$((final_h - gap_vertical * (left_sidebar_count - 1)))
-        local left_sidebar_h=$((available_sidebar_h / left_sidebar_count))
+        local left_heights=()
+        split_strip "$final_h" "$left_sidebar_count" "$gap_vertical" left_heights
+        local y=$final_y i
         for ((i=1; i<=left_sidebar_count; i++)); do
-            local y=$((final_y + (i - 1) * (left_sidebar_h + gap_vertical)))
-            apply_geometry "${window_list[i]}" "$left_sidebar_x" "$y" "$sidebar_w" "$left_sidebar_h"
+            local h=${left_heights[i-1]}
+            apply_geometry "${window_list[i]}" "$left_sidebar_x" "$y" "$sidebar_w" "$h"
+            y=$((y + h + gap_vertical))
         done
     fi
 
     if [[ $right_sidebar_count -gt 0 ]]; then
-        local gap_vertical=$((gap + decoration_h))
-        local available_sidebar_h=$((final_h - gap_vertical * (right_sidebar_count - 1)))
-        local right_sidebar_h=$((available_sidebar_h / right_sidebar_count))
+        local right_heights=()
+        split_strip "$final_h" "$right_sidebar_count" "$gap_vertical" right_heights
+        local y=$final_y i
         for ((i=0; i<right_sidebar_count; i++)); do
             local window_idx=$((left_sidebar_count + 1 + i))
-            local y=$((final_y + i * (right_sidebar_h + gap_vertical)))
-            apply_geometry "${window_list[window_idx]}" "$right_sidebar_x" "$y" "$sidebar_w" "$right_sidebar_h"
+            local h=${right_heights[i]}
+            apply_geometry "${window_list[window_idx]}" "$right_sidebar_x" "$y" "$sidebar_w" "$h"
+            y=$((y + h + gap_vertical))
         done
     fi
 }
