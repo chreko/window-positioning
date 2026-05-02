@@ -259,10 +259,15 @@ watch_daemon_with_ipc() {
     while true; do
         local cmd
         if read -t "$TICK" -r cmd <&3; then
-            # Handle a single command
+            # Handle a single command. The response body may be empty or
+            # contain many newlines; an explicit sentinel terminates the
+            # message so the client knows when to stop reading.
             local resp
             resp="$(handle_daemon_command "$cmd" 2>&1)"
-            printf '%s\n' "$resp" >&4
+            if [[ -n "$resp" ]]; then
+                printf '%s\n' "$resp" >&4
+            fi
+            printf '__DAEMON_RESP_END__\n' >&4
             # Let WM settle; also keep monitor from clobbering right away
             cooldown_now 600
             continue
@@ -591,13 +596,28 @@ send_daemon_command() {
     [[ -p "$DAEMON_CMD_PIPE" ]] || die "Daemon command pipe not found at $DAEMON_CMD_PIPE"
     [[ -p "$DAEMON_RESP_PIPE" ]] || die "Daemon response pipe not found at $DAEMON_RESP_PIPE"
     
-    # Send command and wait for response
+    # Send command and wait for response. The daemon terminates each
+    # response with the sentinel line __DAEMON_RESP_END__, so we accumulate
+    # lines until we see it or the deadline passes.
     echo "$command" > "$DAEMON_CMD_PIPE" || die "Failed to send command to daemon"
-    
-    # Read response (with timeout)
-    local response
-    if read -t 5 response < "$DAEMON_RESP_PIPE" 2>/dev/null; then
-        echo "$response"
+
+    local response="" line got_response=0
+    local deadline=$(( $(date +%s) + 5 ))
+
+    exec 5<"$DAEMON_RESP_PIPE"
+    while (( $(date +%s) < deadline )); do
+        if IFS= read -r -t 1 line <&5; then
+            if [[ "$line" == "__DAEMON_RESP_END__" ]]; then
+                got_response=1
+                break
+            fi
+            response+="${response:+$'\n'}$line"
+        fi
+    done
+    exec 5<&-
+
+    if (( got_response )); then
+        [[ -n "$response" ]] && printf '%s\n' "$response"
         return 0
     else
         die "No response from daemon (timeout after 5 seconds)"
