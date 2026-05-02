@@ -154,10 +154,44 @@ apply_geom_adaptive() {  # id targetFrameX targetFrameY width height
     fi
 }
 
-# Apply geometry to window
+# Wait for the WM to finish applying a geometry change to a window. Polls
+# xdotool getwindowgeometry until two consecutive samples match (the window
+# is no longer moving/resizing) or the deadline elapses. This serializes
+# layout applies so xfwm4 isn't asked to place window N+1 while it's still
+# settling window N — the cause of pixel-imperfect first-pass tiling.
+#
+# Total budget: ~250 ms per window. In the steady case a stable window
+# settles in 30-60 ms; the timeout only fires for misbehaving toolkits
+# that don't emit a configure event we can observe.
+wait_window_settled() {
+    local id="$1"
+    local prev="" stable=0
+    local deadline=$(( $(date +%s%3N) + 250 ))
+
+    while (( $(date +%s%3N) < deadline )); do
+        local cur
+        cur=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null \
+              | grep -E '^(X|Y|WIDTH|HEIGHT)=' | sort)
+        if [[ -n "$cur" && "$cur" == "$prev" ]]; then
+            stable=$((stable + 1))
+            (( stable >= 2 )) && return 0
+        else
+            stable=0
+            prev="$cur"
+        fi
+        # ~20 ms cadence — long enough to give the WM a slice, short
+        # enough that a settled window returns within ~40 ms total.
+        sleep 0.02
+    done
+    return 0
+}
+
+# Apply geometry to window. Waits for the WM to commit the change before
+# returning so subsequent applies see a stable target.
 apply_geometry() {
     local id="$1" x="$2" y="$3" w="$4" h="$5"
     wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
+    wait_window_settled "$id"
     echo "Window positioned at: X=$x, Y=$y, Width=$w, Height=$h"
 }
 
