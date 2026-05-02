@@ -1,6 +1,9 @@
 #!/bin/bash
 
-set -euo pipefail
+# set -e is intentionally omitted: the daemon runs many fallible probes
+# (grep -c on possibly-empty input, optional xprop reads) where a non-zero
+# exit is the normal "no data" path and must not terminate the loop.
+set -uo pipefail
 
 # Watch daemon functionality for place-window
 
@@ -270,7 +273,7 @@ watch_daemon_with_ipc() {
     done
 }
 
-# Generate current master state for comparison (extracted from watch_daemon_internal)
+# Generate current master state for comparison
 get_current_master_state() {
     local current_workspace
     current_workspace=$(get_current_workspace)
@@ -317,7 +320,7 @@ get_current_master_state() {
     echo "$combined_state"
 }
 
-# Apply layout when master state changes (extracted from watch_daemon_internal)
+# Apply layout when master state changes
 apply_workspace_layout() {
     local current_workspace
     current_workspace=$(get_current_workspace)
@@ -329,7 +332,7 @@ apply_workspace_layout() {
     done
 }
 
-# Background window monitoring (simplified from watch_daemon_internal)
+# Background window monitoring
 watch_daemon_monitor() {
     echo "$(date): Window monitoring started"
     local last_master_state=""
@@ -396,87 +399,6 @@ watch_daemon() {
     
     # Start both window monitoring and command listening
     watch_daemon_with_ipc
-}
-
-# Internal daemon implementation with intelligent polling and master window list
-watch_daemon_internal() {
-    echo "$(date): Intelligent polling watch daemon started"
-    echo "$(date): Using master window list as single source of truth"
-    
-    local last_master_state=""
-    
-    # Trap signals for clean exit, immediate reapplication, and idle wake
-    trap 'echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
-    trap 'echo "$(date): Received reload signal - reapplying layouts"; apply_workspace_layout' SIGUSR1
-    trap 'echo "$(date): Received toggle signal - waking from idle"' SIGUSR2
-    
-    # Use the global get_current_master_state function (removed duplicate)
-    
-    # Function to apply layout when master state changes
-    apply_workspace_layout() {
-        local current_workspace
-        current_workspace=$(get_current_workspace)
-        
-        get_screen_info
-        for monitor in "${MONITORS[@]}"; do
-            # Use the shared function for each monitor
-            reapply_saved_layout_for_monitor "$current_workspace" "$monitor"
-        done
-    }
-    
-    echo "$(date): Using intelligent polling with master window list tracking"
-    echo "$(date): Polling interval: 1.0 seconds for instant response"
-    
-    local last_workspace=""
-    
-    while true; do
-        # Enter true idle mode when auto-layout is disabled
-        if ! is_auto_layout_enabled; then
-            echo "$(date): Auto-layout disabled - entering zero-CPU idle mode"
-            # Sleep indefinitely until SIGUSR2 signal (zero CPU usage)
-            sleep infinity &
-            wait $!
-            echo "$(date): Waking from idle mode"
-            # Reset state for fresh rebuild when re-enabled
-            last_master_state=""
-            last_workspace=""
-            continue
-        fi
-        
-        # Check for workspace changes and stabilize before processing
-        local current_workspace_check
-        current_workspace_check=$(get_current_workspace)
-        if [[ "$current_workspace_check" != "$last_workspace" ]]; then
-            echo "$(date): Workspace changed from $last_workspace to $current_workspace_check - stabilizing..."
-            last_workspace="$current_workspace_check"
-            sleep 0.2  # Allow workspace change to complete
-            continue
-        fi
-        
-        # Get current master state for all monitors (current workspace only)
-        local current_master_state
-        current_master_state=$(get_current_master_state)
-        
-        # Compare with previous state, but reset state on workspace change
-        local state_key="${current_workspace_check}:${current_master_state}"
-        if [[ "$state_key" != "$last_master_state" ]]; then
-            # Check if this is just a workspace change (no action needed)
-            if [[ "$current_workspace_check" != "${last_master_state%%:*}" ]] && [[ -n "$last_master_state" ]]; then
-                echo "$(date): Workspace changed - resetting state tracking"
-            else
-                # Apply layout on state change (including initial state)
-                echo "$(date): Master window state changed on workspace $current_workspace_check - triggering layout"
-                
-                # Minimal delay to ensure changes are complete
-                sleep 0.05
-                apply_workspace_layout
-            fi
-            last_master_state="$state_key"
-        fi
-        
-        # Balanced polling interval for responsiveness vs battery life
-        sleep 1.0
-    done
 }
 
 # Check if watch daemon is running

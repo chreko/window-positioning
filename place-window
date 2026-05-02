@@ -10,8 +10,6 @@
 
 set -euo pipefail
 
-echo "=== SCRIPT STARTING ==="
-
 # Global associative array will be declared in windows.sh
 
 # Get the directory where this script is located

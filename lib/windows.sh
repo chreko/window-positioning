@@ -364,14 +364,7 @@ get_visible_windows_by_stacking() {
 
 # Get visible windows on specific monitor, sorted by creation order (oldest first)
 
-# Helper function to trigger daemon reapplication
-trigger_daemon_reapply() {
-    # Send SIGUSR1 to the daemon to trigger immediate layout reapplication
-    local daemon_pid=$(pgrep -f "place-window.*watch")
-    if [[ -n "$daemon_pid" ]]; then
-        kill -SIGUSR1 "$daemon_pid" 2>/dev/null
-    fi
-}
+# trigger_daemon_reapply lives in daemon.sh, which is sourced after this file.
 
 # Initialize window lists for all workspaces and monitors
 initialize_all_workspace_lists() {
