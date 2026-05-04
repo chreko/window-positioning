@@ -2,6 +2,28 @@
 
 ## Pending Tasks
 
+### Restore Event-Driven Daemon (CPU Regression)
+- **Task**: Replace the polling-based `monitor_tick` heartbeat with event-driven X11 monitoring; current daemon burns ~20% CPU at idle
+- **Symptom**: Steady ~20% CPU load with the watch daemon running, even with no window activity
+- **Root cause #1 (immediate, in `lib/daemon.sh:494-521` `reconcile_ws_mon`)**:
+  - `quick_count` counts ALL windows on the workspace via `wmctrl -l | awk '$2==ws || $2==-1' | wc -l` — includes XFCE panel/dock and other DOCK/DESKTOP/MENU/HIDDEN windows
+  - `last_count` (= `WINDOW_COUNT[$k]`) is per-(workspace,monitor) and stores the post-filter, per-monitor count from `current_count` after `get_windows_ordered`
+  - The two are never comparable → "early exit" never fires → full reconciliation runs every 1.5s tick
+  - Full reconciliation fans out into ~12 subprocess spawns per visible window via `get_visible_windows` (4–5 `xprop`s) + `get_window_client_geometry` (`xwininfo` + `xprop` + awks); on dom0/Xen this drives the ~20% CPU
+- **Root cause #2 (architectural regression)**:
+  - Commit `5bbcc7c` (2025-09-07, "Optimize daemon CPU usage with event-driven architecture") used `xprop -spy` / `xev` event-driven monitoring; reported "~50% constant → ~0–1% idle"
+  - Current `watch_daemon_with_ipc` (lib/daemon.sh:224) is pure polling at TICK=1.5s — `xprop -spy` no longer present anywhere in the tree
+- **Plan (option #2 chosen — restore event-driven architecture)**:
+  1. Inspect commit `5bbcc7c` to recover the prior watcher topology (which X11 root properties, IPC contract with the main loop)
+  2. Design integration into the current single-loop daemon: `xprop -spy _NET_CLIENT_LIST _NET_ACTIVE_WINDOW _NET_CURRENT_DESKTOP -root` as a child process whose stdout is piped into the main `read` loop alongside the IPC FIFO; events trigger `monitor_tick`
+  3. Demote the 1.5s tick to a slow safety-net heartbeat (e.g. 30s) so steady-state CPU drops to ~0
+  4. Implement watcher process; ensure it is reaped on SIGTERM/SIGINT and respawned if it dies
+  5. Fix `reconcile_ws_mon` count comparison so the fast path also works on event-driven ticks (compare per-monitor post-filter counts, or drop the shortcut entirely now that ticks are rare)
+  6. Static-check (`bash -n`, `shellcheck`) and trace-through for: idle, single-window open/close, workspace switch, daemon shutdown
+- **Note on commit `12d3316` (`wait_window_settled`)**: the 20ms poll only runs *during* `apply_geometry`, not at idle — not the cause of steady-state CPU
+- **Priority**: High
+- **Status**: Pending — to be done on a different machine where dom0 can be exercised
+
 ### Multimonitor Auto-Layout Fix
 - **Task**: Fix multimonitor autolayout functionality
 - **Description**: Address issues with auto-layout not working correctly across multiple monitors
