@@ -312,5 +312,5 @@ ensure_minimum_size() {
     local w="$1" h="$2"
     w=$((w < MIN_WIDTH ? MIN_WIDTH : w))
     h=$((h < MIN_HEIGHT ? MIN_HEIGHT : h))
-    echo "$w,$h"
+    echo "$w $h"
 }
