@@ -2,6 +2,32 @@
 
 ## Pending Tasks
 
+### Investigate: `master vertical 75` occasionally resets to default vertical (~60%)
+- **Symptom**: After pressing Super+2 (`place-window master vertical 75`), the layout sometimes reverts to what looks like plain `master vertical` at the default 60% master ratio.
+- **Why it looks like that**: For 3 windows, `AUTO_LAYOUT_3=main-two-side` calls `apply_meta_main_sidebar_single_monitor "$monitor" 60 ...` (`lib/layouts.sh:395`) — visually identical to "master vertical 60". Whenever the daemon falls back to its auto-layout default, the user sees this.
+- **Suspect paths** (in order of likelihood):
+  1. `place-window auto` (Super+0, adjacent to Super+2) calls `auto_layout_and_reset_monitor` → `clear_workspace_monitor_layout` (`lib/layouts.sh:426`), which deletes the `MONITOR_<name>_LAYOUT_=` entry. Subsequent reapplies fall through to `main-two-side` default.
+  2. Per-workspace scoping: saved layout lives in `workspace-<N>-monitor.conf`. Switching to a workspace with no saved entry → applies default.
+  3. `reapply_saved_layout_for_monitor` (`lib/layouts.sh:458-481`) silently does nothing if the saved value is non-empty but matches neither `auto` nor `^master[[:space:]]…` (e.g., legacy `master-vertical` hyphenated entries).
+- **Diagnostic next step (must run on dom0, not qubes-builder)**:
+  ```sh
+  cat ~/.config/window-positioning/workspace-*-monitor.conf
+  place-window watch logs | tail -40
+  ```
+  - `Reapplying saved layout 'master vertical 75'…` → saved layout intact, look for an apply-path bug.
+  - `No saved preference - applying default auto-layout…` → something cleared it (path #1 most likely).
+- **Related bugs found during investigation** (fix regardless of root cause):
+  - `lib/windows.sh:721` — `minimize_others` calls `get_workspace_monitor_layout "$current_workspace" "$monitor_name" 1 ""` with `1` in the `window_count` slot. Builds key `MONITOR_X_LAYOUT_1` and never finds the master save (which uses empty count). Should pass `""`. Also missing the `left|right` side argument when calling `apply_meta_main_sidebar_single_monitor`.
+  - `lib/layouts.sh:458-481` — `reapply_saved_layout_for_monitor` has no `else` for the `elif … =~ ^master…` branch. A non-empty unrecognized layout string is silently ignored.
+- **Stale data observed in qubes-builder copy of config** (`workspace-0-monitor.conf`, dated Sept 2025):
+  ```
+  MONITOR_eDP-1_MASTER_LIST=0x12345 0x67890 0xabcde
+  MONITOR_eDP-1_LAYOUT_3=master-vertical
+  ```
+  Both keys are unused by current code (`MASTER_LIST` removed in commit c2031ee; `LAYOUT_<count>` is read by auto-layout path but never written). The `0x…` IDs look like literal placeholders, not real window IDs. Worth checking whether the dom0 file looks similar.
+- **Priority**: Medium
+- **Status**: Pending — needs dom0 diagnostics before code change.
+
 ### Drag-and-Drop Swap Detection
 - **Task**: Improve drag-and-drop swap detection and zone mapping for all layouts
 - **Description**: Complete the implementation of drag-and-drop window swapping with proper zone mapping
