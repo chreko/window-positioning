@@ -293,12 +293,25 @@ watch_daemon_with_ipc() {
     exec 3<>"$DAEMON_CMD_PIPE"
     exec 4<>"$DAEMON_RESP_PIPE"
 
+    # fd 6 = diagnostic log channel that survives the 2>&1 capture in
+    # handle_daemon_command. Without this, log lines emitted from inside
+    # IPC-initiated commands (auto, master, reapply, …) get sent to the
+    # IPC response instead of daemon.log, making bug-diagnosis impossible.
+    # Inherits the daemon's stdout, which `place-window` redirects to
+    # ~/.config/window-positioning/daemon.log via nohup.
+    exec 6>&1
+
     # Spawn the X11 event watcher AFTER FD 3 is open so its writes never block
     # waiting for a reader.
     start_event_watcher
 
     # First-pass layout for any windows already on screen at startup.
     monitor_tick
+
+    # Track workspace for transition logging (helps diagnose layout-reset bugs
+    # where a workspace switch is the unrecorded trigger).
+    local LAST_KNOWN_WS
+    LAST_KNOWN_WS=$(get_current_workspace 2>/dev/null || echo "?")
 
     echo "$(date): entering main loop (heartbeat ${SAFETY_TICK}s)"
     while true; do
@@ -309,6 +322,14 @@ watch_daemon_with_ipc() {
                     # X11 event from xprop -spy. Brief sleep coalesces follow-up
                     # property updates that the WM emits in quick succession.
                     sleep 0.1
+                    if [[ "$cmd" == *"_NET_CURRENT_DESKTOP"* ]]; then
+                        local _new_ws
+                        _new_ws=$(get_current_workspace 2>/dev/null || echo "?")
+                        if [[ "$_new_ws" != "$LAST_KNOWN_WS" ]]; then
+                            echo "$(date): workspace switch $LAST_KNOWN_WS -> $_new_ws"
+                            LAST_KNOWN_WS="$_new_ws"
+                        fi
+                    fi
                     monitor_tick
                     ;;
                 "")

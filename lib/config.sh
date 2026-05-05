@@ -348,10 +348,9 @@ clear_workspace_monitor_layout() {
     local workspace_file="${CONFIG_DIR}/workspace-${workspace}-monitor.conf"
     
     if [[ -f "$workspace_file" ]]; then
-        # Remove all entries for this monitor
         sed -i "/^MONITOR_${monitor_name}_LAYOUT_/d" "$workspace_file"
-        echo "Cleared saved layouts for monitor $monitor_name on workspace $workspace"
+        { echo "$(date): clear_workspace_monitor_layout ws=$workspace monitor=$monitor_name caller=${FUNCNAME[1]:-?}"; } >&6 2>/dev/null
     else
-        echo "No saved layouts found for workspace $workspace"
+        { echo "$(date): clear_workspace_monitor_layout ws=$workspace monitor=$monitor_name caller=${FUNCNAME[1]:-?} (no file to clear)"; } >&6 2>/dev/null
     fi
 }

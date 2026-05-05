@@ -456,11 +456,11 @@ reapply_saved_layout_for_monitor() {
         monitor_layout=$(get_workspace_monitor_layout "$workspace" "$monitor_name" "" "")
 
         if [[ -n "$monitor_layout" ]]; then
-            echo "Reapplying saved layout '$monitor_layout' to monitor $monitor_name ($num_windows windows)"
-
             if [[ "$monitor_layout" == "auto" ]]; then
+                { echo "$(date): reapply ws=$workspace monitor=$monitor_name count=$num_windows -> saved='auto'"; } >&6 2>/dev/null
                 auto_layout_single_monitor "$monitor" "${master_windows[@]}"
             elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
+                { echo "$(date): reapply ws=$workspace monitor=$monitor_name count=$num_windows -> saved='$monitor_layout'"; } >&6 2>/dev/null
                 local master_params="${BASH_REMATCH[1]}"
                 read -r orientation percentage <<< "$master_params"
 
@@ -479,11 +479,11 @@ reapply_saved_layout_for_monitor() {
                         ;;
                 esac
             else
-                echo "Unrecognized saved layout '$monitor_layout' - falling back to auto-layout for monitor $monitor_name ($num_windows windows)"
+                { echo "$(date): reapply ws=$workspace monitor=$monitor_name count=$num_windows -> unrecognized='$monitor_layout' (falling back to auto)"; } >&6 2>/dev/null
                 auto_layout_single_monitor "$monitor" "${master_windows[@]}"
             fi
         else
-            echo "No saved preference - applying default auto-layout to monitor $monitor_name ($num_windows windows)"
+            { echo "$(date): reapply ws=$workspace monitor=$monitor_name count=$num_windows -> no-saved (applying default auto-layout)"; } >&6 2>/dev/null
             auto_layout_single_monitor "$monitor" "${master_windows[@]}"
         fi
     fi
