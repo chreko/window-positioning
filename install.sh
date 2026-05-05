@@ -266,7 +266,11 @@ Description: Auto-arrange all windows
 
 Command: place-window master vertical
 Key: Super+Shift+M
-Description: Master-stack layout
+Description: Master-stack layout (master on left)
+
+Command: place-window master vertical-right 75
+Key: Shift+Super+2
+Description: Master-stack with master on right (75/25 split)
 
 Command: place-window watch toggle
 Key: Super+Shift+W
@@ -393,6 +397,11 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             echo "Installing keyboard shortcuts..."
             set_shortcut "<Super>1" "place-window minimize-others"
             set_shortcut "<Super>2" "place-window master vertical 75"
+            # Shift+Super+2: XFCE stores Shift+digit by the SHIFTED keysym name,
+            # not the digit. On a US/QWERTY layout, Shift+2 -> "@" -> "at".
+            # On other layouts the keysym differs; if the binding does not fire
+            # after install, rebind via Settings > Keyboard > Application Shortcuts.
+            set_shortcut "<Shift><Super>at" "place-window master vertical-right 75"
             set_shortcut "<Super>3" "place-window master center"
             set_shortcut "<Super>4" "place-window master horizontal 50"
             set_shortcut "<Super>Up" "place-window cycle"
