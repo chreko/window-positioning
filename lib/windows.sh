@@ -63,12 +63,6 @@ get_window_client_geometry() {
     echo "$((x + L)),$((y + T)),$w,$h"
 }
 
-# --- Apply CLIENT geometry directly ---
-place_window_client_geometry() {  # $1:id $2:x $3:y $4:w $5:h
-    local id="$1" x="$2" y="$3" w="$4" h="$5"
-    wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}" 2>/dev/null
-}
-
 # ----- Stable geometry helpers (wmctrl) -----
 
 # Read FRAME geometry using wmctrl itself (id -> "x,y,w,h")
@@ -489,13 +483,6 @@ test_initialization() {
 # WINDOW OPERATIONS
 #========================================
 
-# Apply geometry to window using wmctrl
-place_window_geometry() {
-    local wid="$1" x="$2" y="$3" w="$4" h="$5"
-    # Apply geometry using wmctrl
-    wmctrl -i -r "$wid" -e "0,$x,$y,$w,$h" 2>/dev/null
-}
-
 # Get current workspace
 get_current_workspace() {
     wmctrl -d | grep '*' | cut -d' ' -f1
@@ -821,36 +808,25 @@ swap_window_positions() {
 swap_window_geometries() {
     local win1="$1" win2="$2"
 
-    # Get frame extents to calculate coordinate offset
-    local L1 R1 T1 B1 L2 R2 T2 B2
-    read -r L1 R1 T1 B1 < <(xprop -id "$win1" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-    read -r L2 R2 T2 B2 < <(xprop -id "$win2" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-    : "${L1:=0}"; : "${T1:=0}"; : "${L2:=0}"; : "${T2:=0}"
-
-    # Use xwininfo for client coordinates
+    # xwininfo's Absolute upper-left X/Y are frame coords; W/H are client size.
     local info1 info2 x1 y1 w1 h1 x2 y2 w2 h2
     info1=$(xwininfo -id "$win1")
     info2=$(xwininfo -id "$win2")
-    
+
     x1=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info1")
     y1=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info1")
     w1=$(awk '/Width:/ {print $NF}' <<<"$info1")
     h1=$(awk '/Height:/ {print $NF}' <<<"$info1")
-    
+
     x2=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info2")
     y2=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info2")
     w2=$(awk '/Width:/ {print $NF}' <<<"$info2")
     h2=$(awk '/Height:/ {print $NF}' <<<"$info2")
 
-    # Convert to coordinates wmctrl expects (subtract frame extents)
-    local wmctrl_x1=$((x1 - L1)) wmctrl_y1=$((y1 - T1))
-    local wmctrl_x2=$((x2 - L2)) wmctrl_y2=$((y2 - T2))
-
-    # Swap using wmctrl with corrected coordinates
-    wmctrl -i -r "$win1" -e "0,$wmctrl_x2,$wmctrl_y2,$w2,$h2"
-    wmctrl -i -r "$win2" -e "0,$wmctrl_x1,$wmctrl_y1,$w1,$h1"
+    apply_geom_adaptive "$win1" "$x2" "$y2" "$w2" "$h2"
+    wait_window_settled "$win1"
+    apply_geom_adaptive "$win2" "$x1" "$y1" "$w1" "$h1"
+    wait_window_settled "$win2"
 }
 
 cycle_window_positions() {
