@@ -9,16 +9,23 @@
   1. `place-window auto` (Super+0, adjacent to Super+2) calls `auto_layout_and_reset_monitor` → `clear_workspace_monitor_layout` (`lib/layouts.sh:426`), which deletes the `MONITOR_<name>_LAYOUT_=` entry. Subsequent reapplies fall through to `main-two-side` default.
   2. Per-workspace scoping: saved layout lives in `workspace-<N>-monitor.conf`. Switching to a workspace with no saved entry → applies default.
   3. `reapply_saved_layout_for_monitor` (`lib/layouts.sh:458-481`) silently does nothing if the saved value is non-empty but matches neither `auto` nor `^master[[:space:]]…` (e.g., legacy `master-vertical` hyphenated entries).
-- **Diagnostic next step (must run on dom0, not qubes-builder)**:
+- **Diagnostic procedure** (instrumentation deployed in commit `5680872`):
+  When the bug next reproduces, run:
   ```sh
+  place-window watch logs | tail -80
   cat ~/.config/window-positioning/workspace-*-monitor.conf
-  place-window watch logs | tail -40
   ```
-  - `Reapplying saved layout 'master vertical 75'…` → saved layout intact, look for an apply-path bug.
-  - `No saved preference - applying default auto-layout…` → something cleared it (path #1 most likely).
+  Look for the most recent log lines for the affected `(workspace, monitor)`:
+  - `reapply ws=N monitor=X count=K -> saved='master vertical 75'` → saved layout intact and applied. If the visual is still wrong, it's an apply-path bug, not a state-loss bug.
+  - `clear_workspace_monitor_layout ws=N monitor=X caller=<funcname>` immediately before a `no-saved` reapply → **Path #1**. The `caller` field names the user command that wiped the entry (e.g. `auto_layout_and_reset_monitor` if `place-window auto` ran).
+  - `workspace switch X -> Y` followed by `reapply ws=Y monitor=… count=… -> no-saved (applying default auto-layout)` → **Path #2** (per-workspace scoping miss).
+  - `reapply ws=N monitor=X count=K -> unrecognized='<value>' (falling back to auto)` → **Path #3** (should not occur; 43dc26c routes legacy values; if it does, a writer is regressing).
 - **Related bugs found during investigation** (fixed):
   - ✅ `lib/windows.sh` — `minimize_others` was calling `get_workspace_monitor_layout` with `1` in the `window_count` slot, building key `MONITOR_X_LAYOUT_1` and never matching the master save (empty count). Now passes `""`. Also added `vertical-right` case and the missing `left|right` side arg on `apply_meta_main_sidebar_single_monitor`, plus an `else` fallback to auto-layout when the saved value is unrecognized.
   - ✅ `lib/layouts.sh` — `reapply_saved_layout_for_monitor` now falls back to `auto_layout_single_monitor` instead of silently doing nothing when the saved layout is non-empty but matches neither `auto` nor `^master …`.
+  - ✅ `c1fda77` — IGNORED_APPS glob-leak; `update_setting` sed delimiter; `cycle` / `reverse_cycle` adaptive wmctrl coord-mode; `get_screen_info_cached` stderr routing.
+  - ✅ `c614a6a` — Removed fictional `auto-config` subcommand from CLAUDE.md and README.md.
+  - ✅ `5680872` — Phase 1 diagnostic instrumentation for this regression (this entry's `Diagnostic procedure` block above).
 - **Stale data observed in qubes-builder copy of config** (`workspace-0-monitor.conf`, dated Sept 2025):
   ```
   MONITOR_eDP-1_MASTER_LIST=0x12345 0x67890 0xabcde
@@ -26,7 +33,7 @@
   ```
   Both keys are unused by current code (`MASTER_LIST` removed in commit c2031ee; `LAYOUT_<count>` is read by auto-layout path but never written). The `0x…` IDs look like literal placeholders, not real window IDs. Worth checking whether the dom0 file looks similar.
 - **Priority**: Medium
-- **Status**: Pending — needs dom0 diagnostics before code change.
+- **Status**: Instrumentation deployed (commit `5680872`) — awaiting natural reproduction. No code change until the log names a path.
 
 ### Drag-and-Drop Swap Detection
 - **Task**: Improve drag-and-drop swap detection and zone mapping for all layouts
