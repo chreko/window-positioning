@@ -33,11 +33,18 @@ simultaneous_resize() {
     local target_geom=$(get_window_geometry "$target_id")
     IFS=',' read -r tx ty tw th <<< "$target_geom"
     
+    # Sign of the change: +1 for expand, -1 for shrink. Computed by string
+    # match — bash arithmetic evaluates non-numeric identifiers as 0, so
+    # `(direction == "expand-right" ? a : -a)` is always (0 == 0 ? a : -a) = a,
+    # which silently turns shrink-* into expand-* and breaks adjacent windows.
+    local sign=1
+    [[ "$direction" == shrink-* ]] && sign=-1
+
     case "$direction" in
         expand-right|shrink-right)
-            local new_tw=$((tw + (direction == "expand-right" ? amount : -amount)))
+            local new_tw=$((tw + sign * amount))
             apply_geometry "$target_id" $tx $ty $new_tw $th
-            
+
             # Adjust right-adjacent windows
             for adj in "${adjacent[@]}"; do
                 local adj_id="${adj%:*}"
@@ -45,16 +52,16 @@ simultaneous_resize() {
                 if [[ "$adj_dir" == "right" ]]; then
                     local adj_geom=$(get_window_geometry "$adj_id")
                     IFS=',' read -r ax ay aw ah <<< "$adj_geom"
-                    local new_ax=$((ax + (direction == "expand-right" ? amount : -amount)))
-                    local new_aw=$((aw + (direction == "expand-right" ? -amount : amount)))
+                    local new_ax=$((ax + sign * amount))
+                    local new_aw=$((aw - sign * amount))
                     apply_geometry "$adj_id" $new_ax $ay $new_aw $ah
                 fi
             done
             ;;
         expand-down|shrink-down)
-            local new_th=$((th + (direction == "expand-down" ? amount : -amount)))
+            local new_th=$((th + sign * amount))
             apply_geometry "$target_id" $tx $ty $tw $new_th
-            
+
             # Adjust bottom-adjacent windows
             for adj in "${adjacent[@]}"; do
                 local adj_id="${adj%:*}"
@@ -62,8 +69,8 @@ simultaneous_resize() {
                 if [[ "$adj_dir" == "bottom" ]]; then
                     local adj_geom=$(get_window_geometry "$adj_id")
                     IFS=',' read -r ax ay aw ah <<< "$adj_geom"
-                    local new_ay=$((ay + (direction == "expand-down" ? amount : -amount)))
-                    local new_ah=$((ah + (direction == "expand-down" ? -amount : amount)))
+                    local new_ay=$((ay + sign * amount))
+                    local new_ah=$((ah - sign * amount))
                     apply_geometry "$adj_id" $new_ax $new_ay $aw $new_ah
                 fi
             done
