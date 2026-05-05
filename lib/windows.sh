@@ -250,9 +250,9 @@ get_visible_windows() {
         local title=$(xprop -id "$id" _NET_WM_NAME 2>/dev/null | sed -n 's/.*= "\(.*\)"/\1/p')
         [[ -z "$title" ]] && title=$(xprop -id "$id" WM_NAME 2>/dev/null | sed -n 's/.*= "\(.*\)"/\1/p')
         if [[ -n "$IGNORED_APPS" && (-n "$class" || -n "$title") ]]; then
-            # Convert comma-separated list to array (zsh/bash compatible)
-            local IFS=','
-            local ignored_array=($IGNORED_APPS)
+            # Split comma list without glob expansion against CWD
+            local ignored_array=()
+            IFS=',' read -ra ignored_array <<< "$IGNORED_APPS"
             local should_skip=false
             for app in "${ignored_array[@]}"; do
                 # Trim whitespace
@@ -874,15 +874,8 @@ cycle_window_positions() {
         local target_pos=$(( (i + 1) % n ))
         local geom="${geometries[$target_pos]}"
         IFS=',' read -r x y w h <<< "$geom"
-        
-        # Get frame extents for coordinate conversion
-        local L R T B
-        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-        L=${L:-0}; T=${T:-0}
-        
-        # Convert to wmctrl coordinates and position window
-        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
+        apply_geom_adaptive "${windows[$i]}" "$x" "$y" "$w" "$h"
+        wait_window_settled "${windows[$i]}"
     done
     
     # After rotation, check if we should reapply layout
@@ -919,15 +912,8 @@ reverse_cycle_window_positions() {
         local target_pos=$(( (i - 1 + n) % n ))
         local geom="${geometries[$target_pos]}"
         IFS=',' read -r x y w h <<< "$geom"
-        
-        # Get frame extents for coordinate conversion
-        local L R T B
-        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-        L=${L:-0}; T=${T:-0}
-        
-        # Convert to wmctrl coordinates and position window
-        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
+        apply_geom_adaptive "${windows[$i]}" "$x" "$y" "$w" "$h"
+        wait_window_settled "${windows[$i]}"
     done
     
     # After rotation, check if we should reapply layout

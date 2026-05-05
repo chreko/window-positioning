@@ -99,7 +99,7 @@ get_screen_info_cached() {
         get_screen_info  # Calls original function from monitors.sh
         SCREEN_INFO_CACHE=("${MONITORS[@]}")
         SCREEN_INFO_CACHE_TIME=$now
-        echo "$(date): Monitor info refreshed (cache TTL: 30s)"
+        echo "$(date): Monitor info refreshed (cache TTL: 30s)" >&2
     else
         # Restore cached monitors
         MONITORS=("${SCREEN_INFO_CACHE[@]}")

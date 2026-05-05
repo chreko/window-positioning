@@ -132,8 +132,8 @@ load_config() {
 validate_ignored_apps() {
     [[ -z "$IGNORED_APPS" ]] && return 0
     
-    local IFS=','
-    local apps=($IGNORED_APPS)
+    local apps=()
+    IFS=',' read -ra apps <<< "$IGNORED_APPS"
     local errors=()
     
     for app in "${apps[@]}"; do
@@ -172,7 +172,7 @@ validate_ignored_apps() {
 update_setting() {
     local setting_name="$1"
     local new_value="$2"
-    sed -i "s/^${setting_name}=.*/${setting_name}=${new_value}/" "$SETTINGS_FILE"
+    sed -i "s|^${setting_name}=.*|${setting_name}=${new_value}|" "$SETTINGS_FILE"
 }
 
 # Auto-detect decoration dimensions from a sample window
@@ -310,7 +310,7 @@ save_workspace_monitor_layout() {
     # Update or add the layout entry  
     local key="MONITOR_${monitor_name}_LAYOUT_${window_count}"
     if grep -q "^${key}=" "$workspace_file"; then
-        sed -i "s/^${key}=.*/${key}=${layout}/" "$workspace_file"
+        sed -i "s|^${key}=.*|${key}=${layout}|" "$workspace_file"
     else
         echo "${key}=${layout}" >> "$workspace_file"
     fi
