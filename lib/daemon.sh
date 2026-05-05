@@ -364,53 +364,6 @@ watch_daemon_with_ipc() {
     done
 }
 
-# Generate current master state for comparison
-get_current_master_state() {
-    local current_workspace
-    current_workspace=$(get_current_workspace)
-    
-    # Add small delay to ensure workspace switch is complete
-    sleep 0.05
-    
-    get_screen_info_cached
-    local combined_state="workspace:$current_workspace|"
-    
-    for monitor in "${MONITORS[@]}"; do
-        IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-        
-        # Get window list for this monitor (current workspace only)
-        local master_list
-        master_list=$(get_windows_ordered "$monitor_name")
-        
-        # Validate that all windows in the list are actually on current workspace
-        local validated_list=""
-        for window_id in $master_list; do
-            if [[ -n "$window_id" ]]; then
-                local window_desktop
-                window_desktop=$(wmctrl -l | grep "^$window_id " | awk '{print $2}')
-                if [[ "$window_desktop" == "$current_workspace" || "$window_desktop" == "-1" ]]; then
-                    validated_list="$validated_list $window_id"
-                fi
-            fi
-        done
-        master_list=$(echo "$validated_list" | xargs)
-        
-        # Also get window states to detect minimize/restore
-        local window_states=""
-        while IFS= read -r window_id; do
-            if [[ -n "$window_id" ]]; then
-                local state
-                state=$(xprop -id "$window_id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED" || echo "NORMAL")
-                window_states="${window_states}${window_id}:${state};"
-            fi
-        done <<< "$master_list"
-        
-        combined_state="${combined_state}${monitor_name}=[${master_list// /,}]:${window_states}|"
-    done
-    
-    echo "$combined_state"
-}
-
 # Apply layout when master state changes
 apply_workspace_layout() {
     local current_workspace
@@ -420,64 +373,6 @@ apply_workspace_layout() {
     for monitor in "${MONITORS[@]}"; do
         # Use the shared function for each monitor
         reapply_saved_layout_for_monitor "$current_workspace" "$monitor"
-    done
-}
-
-# Background window monitoring
-watch_daemon_monitor() {
-    echo "$(date): Window monitoring started"
-    local last_master_state=""
-    
-    # Set up signal handler to wake from idle sleep
-    trap 'echo "$(date): Woken from idle by toggle signal"' SIGUSR2
-    
-    while true; do
-        # Enter true idle mode when auto-layout is disabled
-        if ! is_auto_layout_enabled; then
-            echo "$(date): Auto-layout disabled - entering zero-CPU idle mode"
-            # Sleep indefinitely until SIGUSR2 signal (zero CPU usage)
-            sleep infinity &
-            wait $!
-            echo "$(date): Waking from idle mode"
-            # Reset state for fresh rebuild when re-enabled
-            last_master_state=""
-            continue
-        fi
-        
-        local current_state
-        current_state=$(get_current_master_state)
-        
-        if [[ "$current_state" != "$last_master_state" ]]; then
-            echo "$(date): Window state changed"
-            echo "$(date): Auto-layout enabled - applying layouts"
-            apply_workspace_layout
-            last_master_state="$current_state"
-        fi
-        
-        sleep 0.75  # Check every 750ms for better battery life
-    done
-}
-
-# IPC command loop - listens for commands on the pipe
-daemon_command_loop() {
-    echo "$(date): IPC command listener started"
-    
-    while true; do
-        # Read command from pipe (blocks until command received)
-        if read -r command < "$DAEMON_CMD_PIPE" 2>/dev/null; then
-            echo "$(date): Received command: $command"
-            
-            # Handle the command and get response
-            local response
-            response=$(handle_daemon_command "$command")
-            
-            # Send response back
-            echo "$response" > "$DAEMON_RESP_PIPE" 2>/dev/null || echo "Error: Failed to send response"
-        else
-            # Pipe was closed or error occurred
-            echo "$(date): Command pipe closed - daemon exiting"
-            break
-        fi
     done
 }
 
