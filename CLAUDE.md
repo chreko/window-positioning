@@ -154,8 +154,6 @@ place-window auto               # Auto-arrange all windows
 
 ### Advanced Layout Management
 ```bash
-place-window auto-config show                    # Show current preferences  
-place-window auto-config 2 primary-secondary     # Set 2-window preference
 place-window master vertical                     # Master-stack layout
 place-window center-master                       # Center-focused layout
 ```

@@ -91,11 +91,16 @@ Automatically arranges all non-minimized, non-maximized windows on the current w
 Layouts adapt based on window count (1-5 windows supported).
 
 ### Auto-Layout Configuration
-```bash
-place-window auto-config show              # Show current preferences
-place-window auto-config 2 equal           # Set 2-window layout to equal split
-place-window auto-config 2 primary-secondary  # Set to 70/30 split
-place-window auto-config 3 three-columns   # Set 3-window layout to columns
+Per-window-count defaults are set via the `AUTO_LAYOUT_<N>` keys in
+`~/.config/window-positioning/settings.conf`. Edit the file directly, then
+restart the daemon (`place-window watch restart`) so the new values are picked up:
+
+```ini
+AUTO_LAYOUT_1=maximize
+AUTO_LAYOUT_2=primary-secondary   # 70/30 split for 2 windows
+AUTO_LAYOUT_3=three-columns       # 3 equal columns
+AUTO_LAYOUT_4=grid
+AUTO_LAYOUT_5=grid-wide-bottom
 ```
 
 **Available Auto-Layouts:**
@@ -314,14 +319,12 @@ place-window master vertical    # Editor master, browser+terminal stacked
 ```
 
 **Customize auto-layout for your workflow:**
-```bash
-# Prefer 70/30 split for 2 windows:
-place-window auto-config 2 primary-secondary
-# Prefer 3 columns for 3 windows:
-place-window auto-config 3 three-columns
-# Now auto-layout uses your preferences:
-place-window auto
+Edit `~/.config/window-positioning/settings.conf`:
+```ini
+AUTO_LAYOUT_2=primary-secondary   # 70/30 split for 2 windows
+AUTO_LAYOUT_3=three-columns       # 3 equal columns
 ```
+Then `place-window watch restart` and `place-window auto` to apply.
 
 **Save your current layout:**
 ```bash
