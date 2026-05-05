@@ -150,11 +150,6 @@ validate_ignored_apps() {
         if echo "$app" | grep -q '[[\]'; then
             errors+=("Invalid pattern '$app': Square brackets not supported")
         fi
-        
-        # Check for unmatched wildcards at beginning (valid but warn)
-        if [[ "$app" == \** ]] || [[ "$app" == \?* ]]; then
-            echo "Note: Pattern '$app' starts with wildcard - will match many windows" >&2
-        fi
     done
     
     if [[ ${#errors[@]} -gt 0 ]]; then
