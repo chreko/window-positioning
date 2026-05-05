@@ -607,12 +607,20 @@ reconcile_ws_mon() {  # args: workspace monitor_name
 }
 
 monitor_tick() {
-    # Skip all processing if auto-layout is disabled (maximum CPU savings)
+    # Skip all processing if auto-layout is disabled (maximum CPU savings).
+    # Log only on the disabled→enabled→disabled transition, not on every tick;
+    # otherwise this line floods daemon.log every heartbeat (30s) plus every
+    # X11 event for as long as the user keeps auto-layout off.
     if ! is_auto_layout_enabled; then
-        echo "$(date): Auto-layout disabled - daemon idle (maximum CPU savings)"
+        if [[ "${MONITOR_TICK_DISABLED_LOGGED:-0}" -eq 0 ]]; then
+            echo "$(date): Auto-layout disabled - daemon idle (maximum CPU savings)"
+            MONITOR_TICK_DISABLED_LOGGED=1
+        fi
         return 0
     fi
-    
+    MONITOR_TICK_DISABLED_LOGGED=0
+
+
     # Iterate just the current workspace; your layouts also operate per monitor.
     local ws mon k
     ws="$(get_current_workspace)"
