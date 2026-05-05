@@ -139,7 +139,7 @@ case "${1:-}" in
     master)
         # Master-stack layouts - route through daemon for window list access
         case "${2:-}" in
-            vertical|horizontal)
+            vertical|vertical-right|horizontal)
                 # Parse percentage and validate
                 if [[ "${3:-}" == "--all" ]]; then
                     percentage="${4:-60}"
@@ -175,8 +175,9 @@ case "${1:-}" in
                 ;;
             *)
                 echo "Master layout commands:"
-                echo "  place-window master vertical [percentage]   Master on left, stack on right - current monitor"
-                echo "  place-window master horizontal [percentage] Master on top, stack on bottom - current monitor"
+                echo "  place-window master vertical [percentage]       Master on left, stack on right - current monitor"
+                echo "  place-window master vertical-right [percentage] Master on right, stack on left - current monitor"
+                echo "  place-window master horizontal [percentage]     Master on top, stack on bottom - current monitor"
                 echo "  place-window master center [percentage]     Center master with sidebars - current monitor"
                 echo "  place-window master vertical --all [percentage]   Apply to all monitors"
                 echo "  place-window master horizontal --all [percentage] Apply to all monitors"
@@ -474,8 +475,9 @@ Auto-layout system:
   place-window reapply            Reapply saved layout for current workspace
 
 Master-stack layouts:
-  place-window master vertical [%]    Master on left (current monitor)
-  place-window master horizontal [%]  Master on top (current monitor)
+  place-window master vertical [%]       Master on left (current monitor)
+  place-window master vertical-right [%] Master on right (current monitor)
+  place-window master horizontal [%]     Master on top (current monitor)
   place-window master center [%]      Center master with sidebars (current monitor)
   place-window master vertical --all [%]  Apply to all monitors
 

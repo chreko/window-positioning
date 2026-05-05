@@ -772,13 +772,20 @@ master_stack_layout_current_monitor() {
     local num_windows=${#windows_on_monitor[@]}
     echo "Monitor $name: Applying master-stack ($orientation, ${percentage}%) to $num_windows window(s)"
     
-    if [[ "$orientation" == "vertical" ]]; then
-        # Master on left, stack on right - use main-sidebar atomic function
-        apply_meta_main_sidebar_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
-    else
-        # Master on top, stack on bottom - use topbar-main atomic function  
-        apply_meta_topbar_main_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
-    fi
+    case "$orientation" in
+        vertical)
+            # Master on left, stack on right
+            apply_meta_main_sidebar_single_monitor "$current_monitor" "$percentage" left "${windows_on_monitor[@]}"
+            ;;
+        vertical-right)
+            # Master on right, stack on left
+            apply_meta_main_sidebar_single_monitor "$current_monitor" "$percentage" right "${windows_on_monitor[@]}"
+            ;;
+        *)
+            # Master on top, stack on bottom (horizontal default)
+            apply_meta_topbar_main_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"
+            ;;
+    esac
     
     echo "Master-stack layout ($orientation) applied to current monitor"
     

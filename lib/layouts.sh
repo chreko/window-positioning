@@ -105,9 +105,18 @@ apply_meta_columns_single_monitor() {
 }
 
 apply_meta_main_sidebar_single_monitor() {
+    # $1 monitor, $2 main_width_percent, [$3 side: left|right (optional)], $@... window IDs
+    # Side defaults to "left" (main on left, sidebar on right). "right" flips it.
+    # Detection: $3 is the side keyword only if it is exactly "left" or "right";
+    # otherwise it is the first window ID and side stays at default.
     local monitor="$1"
     local main_width_percent="$2"
     shift 2
+    local side="left"
+    if [[ "${1:-}" == "left" || "${1:-}" == "right" ]]; then
+        side="$1"
+        shift
+    fi
     local window_list=("$@")
 
     local layout_area usable_x usable_y usable_w usable_h
@@ -126,9 +135,17 @@ apply_meta_main_sidebar_single_monitor() {
     local available_w=$((final_w - gap_between))
     local main_w=$((available_w * main_width_percent / 100))
     local sidebar_w=$((available_w - main_w))
-    local sidebar_x=$((final_x + main_w + gap_between))
 
-    apply_geometry "${window_list[0]}" "$final_x" "$final_y" "$main_w" "$final_h"
+    local main_x sidebar_x
+    if [[ "$side" == "right" ]]; then
+        sidebar_x=$final_x
+        main_x=$((final_x + sidebar_w + gap_between))
+    else
+        main_x=$final_x
+        sidebar_x=$((final_x + main_w + gap_between))
+    fi
+
+    apply_geometry "${window_list[0]}" "$main_x" "$final_y" "$main_w" "$final_h"
 
     # Sidebar windows stacked vertically, accounting for decorations between
     local sidebar_windows=$((num_windows - 1))
@@ -447,13 +464,20 @@ reapply_saved_layout_for_monitor() {
                 local master_params="${BASH_REMATCH[1]}"
                 read -r orientation percentage <<< "$master_params"
 
-                if [[ "$orientation" == "center" ]]; then
-                    apply_meta_center_sidebar_single_monitor "$monitor" "${percentage:-50}" "${master_windows[@]}"
-                elif [[ "$orientation" == "vertical" ]]; then
-                    apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
-                else
-                    apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
-                fi
+                case "$orientation" in
+                    center)
+                        apply_meta_center_sidebar_single_monitor "$monitor" "${percentage:-50}" "${master_windows[@]}"
+                        ;;
+                    vertical)
+                        apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" left "${master_windows[@]}"
+                        ;;
+                    vertical-right)
+                        apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" right "${master_windows[@]}"
+                        ;;
+                    *)
+                        apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
+                        ;;
+                esac
             fi
         else
             echo "No saved preference - applying default auto-layout to monitor $monitor_name ($num_windows windows)"
