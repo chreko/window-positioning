@@ -808,24 +808,37 @@ swap_window_positions() {
 swap_window_geometries() {
     local win1="$1" win2="$2"
 
-    # xwininfo's Absolute upper-left X/Y are frame coords; W/H are client size.
+    # xfwm4 quirk: `wmctrl -e "0,X,Y,W,H"` lands the window at xwininfo
+    # position (X+L, Y+T). To place a window at xwininfo (X, Y), pass
+    # `wmctrl -e (X-L, Y-T)`. apply_geom_adaptive's "frame" / "client"
+    # detection doesn't model this on xfwm4 (the no-op probe in
+    # detect_wmctrl_coord_mode gets a false "frame" verdict because moving
+    # to the current position appears unchanged), so we apply the
+    # correction directly here.
+    local L1 R1 T1 B1 L2 R2 T2 B2
+    read -r L1 R1 T1 B1 < <(xprop -id "$win1" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+    read -r L2 R2 T2 B2 < <(xprop -id "$win2" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+    : "${L1:=0}"; : "${T1:=0}"; : "${L2:=0}"; : "${T2:=0}"
+
     local info1 info2 x1 y1 w1 h1 x2 y2 w2 h2
     info1=$(xwininfo -id "$win1")
     info2=$(xwininfo -id "$win2")
-
     x1=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info1")
     y1=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info1")
     w1=$(awk '/Width:/ {print $NF}' <<<"$info1")
     h1=$(awk '/Height:/ {print $NF}' <<<"$info1")
-
     x2=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info2")
     y2=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info2")
     w2=$(awk '/Width:/ {print $NF}' <<<"$info2")
     h2=$(awk '/Height:/ {print $NF}' <<<"$info2")
 
-    apply_geom_adaptive "$win1" "$x2" "$y2" "$w2" "$h2"
+    # Subtract per-window frame extents so the result lands at the source's
+    # original xwininfo position.
+    wmctrl -i -r "$win1" -e "0,$((x2 - L1)),$((y2 - T1)),$w2,$h2"
     wait_window_settled "$win1"
-    apply_geom_adaptive "$win2" "$x1" "$y1" "$w1" "$h1"
+    wmctrl -i -r "$win2" -e "0,$((x1 - L2)),$((y1 - T2)),$w1,$h1"
     wait_window_settled "$win2"
 }
 
@@ -838,7 +851,9 @@ cycle_window_positions() {
     echo "DEBUG: Found ${n} windows to cycle" >&2
     (( n < 2 )) && { echo "DEBUG: Not enough windows to cycle (need at least 2)" >&2; return 0; }
     
-    # Store all window geometries
+    # Store xwininfo positions (frame outer corner). Each apply below subtracts
+    # the destination window's own (L, T) before calling wmctrl -e — xfwm4's
+    # `wmctrl -e (X, Y)` lands the window at xwininfo (X+L, Y+T).
     local geometries=()
     for window in "${windows[@]}"; do
         geometries+=("$(get_window_geometry "$window")")
@@ -850,7 +865,11 @@ cycle_window_positions() {
         local target_pos=$(( (i + 1) % n ))
         local geom="${geometries[$target_pos]}"
         IFS=',' read -r x y w h <<< "$geom"
-        apply_geom_adaptive "${windows[$i]}" "$x" "$y" "$w" "$h"
+        local L R T B
+        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+        : "${L:=0}"; : "${T:=0}"
+        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
         wait_window_settled "${windows[$i]}"
     done
     
@@ -876,7 +895,9 @@ reverse_cycle_window_positions() {
     local n=${#windows[@]}
     (( n < 2 )) && return 0
     
-    # Store all window geometries
+    # Store xwininfo positions (frame outer corner). Each apply below subtracts
+    # the destination window's own (L, T) before calling wmctrl -e — xfwm4's
+    # `wmctrl -e (X, Y)` lands the window at xwininfo (X+L, Y+T).
     local geometries=()
     for window in "${windows[@]}"; do
         geometries+=("$(get_window_geometry "$window")")
@@ -888,7 +909,11 @@ reverse_cycle_window_positions() {
         local target_pos=$(( (i - 1 + n) % n ))
         local geom="${geometries[$target_pos]}"
         IFS=',' read -r x y w h <<< "$geom"
-        apply_geom_adaptive "${windows[$i]}" "$x" "$y" "$w" "$h"
+        local L R T B
+        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
+                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
+        : "${L:=0}"; : "${T:=0}"
+        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
         wait_window_settled "${windows[$i]}"
     done
     
