@@ -718,14 +718,14 @@ minimize_others() {
             
             # Get current workspace and check for saved layout
             local current_workspace=$(get_current_workspace)
-            local monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" 1 "")
-            
-            # Get current windows on monitor  
+            local monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" "" "")
+
+            # Get current windows on monitor
             local windows_on_monitor=()
             while IFS= read -r id; do
                 [[ -n "$id" ]] && windows_on_monitor+=("$id")
             done < <(get_visible_windows "$monitor_name")
-            
+
             if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
                 if [[ -n "$monitor_layout" ]]; then
                     echo "Applying saved monitor layout: $monitor_layout"
@@ -734,15 +734,23 @@ minimize_others() {
                     elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
                         local master_params="${BASH_REMATCH[1]}"
                         read -r orientation percentage <<< "$master_params"
-                        
-                        # Reuse existing atomic functions
-                        if [[ "$orientation" == "center" ]]; then
-                            apply_meta_center_sidebar_single_monitor "$current_monitor" "${percentage:-50}" "${windows_on_monitor[@]}"
-                        elif [[ "$orientation" == "vertical" ]]; then
-                            apply_meta_main_sidebar_single_monitor "$current_monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
-                        else
-                            apply_meta_topbar_main_single_monitor "$current_monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
-                        fi
+
+                        case "$orientation" in
+                            center)
+                                apply_meta_center_sidebar_single_monitor "$current_monitor" "${percentage:-50}" "${windows_on_monitor[@]}"
+                                ;;
+                            vertical)
+                                apply_meta_main_sidebar_single_monitor "$current_monitor" "${percentage:-60}" left "${windows_on_monitor[@]}"
+                                ;;
+                            vertical-right)
+                                apply_meta_main_sidebar_single_monitor "$current_monitor" "${percentage:-60}" right "${windows_on_monitor[@]}"
+                                ;;
+                            *)
+                                apply_meta_topbar_main_single_monitor "$current_monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
+                                ;;
+                        esac
+                    else
+                        auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
                     fi
                 else
                     echo "Applying auto-layout to current monitor"

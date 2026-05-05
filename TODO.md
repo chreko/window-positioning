@@ -16,9 +16,9 @@
   ```
   - `Reapplying saved layout 'master vertical 75'…` → saved layout intact, look for an apply-path bug.
   - `No saved preference - applying default auto-layout…` → something cleared it (path #1 most likely).
-- **Related bugs found during investigation** (fix regardless of root cause):
-  - `lib/windows.sh:721` — `minimize_others` calls `get_workspace_monitor_layout "$current_workspace" "$monitor_name" 1 ""` with `1` in the `window_count` slot. Builds key `MONITOR_X_LAYOUT_1` and never finds the master save (which uses empty count). Should pass `""`. Also missing the `left|right` side argument when calling `apply_meta_main_sidebar_single_monitor`.
-  - `lib/layouts.sh:458-481` — `reapply_saved_layout_for_monitor` has no `else` for the `elif … =~ ^master…` branch. A non-empty unrecognized layout string is silently ignored.
+- **Related bugs found during investigation** (fixed):
+  - ✅ `lib/windows.sh` — `minimize_others` was calling `get_workspace_monitor_layout` with `1` in the `window_count` slot, building key `MONITOR_X_LAYOUT_1` and never matching the master save (empty count). Now passes `""`. Also added `vertical-right` case and the missing `left|right` side arg on `apply_meta_main_sidebar_single_monitor`, plus an `else` fallback to auto-layout when the saved value is unrecognized.
+  - ✅ `lib/layouts.sh` — `reapply_saved_layout_for_monitor` now falls back to `auto_layout_single_monitor` instead of silently doing nothing when the saved layout is non-empty but matches neither `auto` nor `^master …`.
 - **Stale data observed in qubes-builder copy of config** (`workspace-0-monitor.conf`, dated Sept 2025):
   ```
   MONITOR_eDP-1_MASTER_LIST=0x12345 0x67890 0xabcde

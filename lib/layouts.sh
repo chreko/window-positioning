@@ -478,6 +478,9 @@ reapply_saved_layout_for_monitor() {
                         apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"
                         ;;
                 esac
+            else
+                echo "Unrecognized saved layout '$monitor_layout' - falling back to auto-layout for monitor $monitor_name ($num_windows windows)"
+                auto_layout_single_monitor "$monitor" "${master_windows[@]}"
             fi
         else
             echo "No saved preference - applying default auto-layout to monitor $monitor_name ($num_windows windows)"
