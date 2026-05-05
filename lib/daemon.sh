@@ -41,9 +41,15 @@ declare -Ag HOLD_UNTIL_MS 2>/dev/null || true
 declare -ag SCREEN_INFO_CACHE=()
 SCREEN_INFO_CACHE_TIME=0
 
-# Debouncing for rapid changes
-LAST_CHANGE_TIME=0
-DEBOUNCE_DELAY=2  # seconds
+# Debouncing for rapid changes — per-monitor so an apply on one monitor
+# never gates an apply on a different monitor.
+declare -Ag LAST_CHANGE_TIME 2>/dev/null || true
+DEBOUNCE_DELAY=2  # seconds, per (workspace,monitor)
+
+# Event watcher state (xprop -spy on root atoms; events drive monitor_tick)
+WATCHER_PID=""
+EVENT_TAG="__EVENT__"
+SAFETY_TICK=30  # heartbeat seconds — events do most of the work
 
 hold_now() {  # ws mon_name [ms]
   local ws="$1" mon="$2" ms="${3:-900}"
@@ -220,15 +226,51 @@ disable_daemon_auto_layout() {
     return 0
 }
 
+# Spawn xprop -spy on root atoms; respawn if it dies. Each event line is
+# tagged and pushed into the IPC pipe so the main loop can multiplex events
+# and commands through a single read.
+#
+# Atoms watched:
+#   _NET_CLIENT_LIST       window create / destroy
+#   _NET_CURRENT_DESKTOP   workspace switch
+# Stacking changes (_NET_CLIENT_LIST_STACKING) intentionally skipped — they
+# fire on every focus click and produce too much churn; the 30s safety-net
+# tick catches minimize/restore.
+start_event_watcher() {
+    [[ -n "$WATCHER_PID" ]] && kill -0 "$WATCHER_PID" 2>/dev/null && return 0
+
+    (
+        # Subshell: reap child xprop/awk on signal so they don't outlive the daemon.
+        # $$ inside a subshell is still the parent's PID — use $BASHPID for our own.
+        trap 'pkill -P "$BASHPID" 2>/dev/null; exit 0' SIGTERM SIGINT
+        while true; do
+            xprop -spy -root _NET_CLIENT_LIST _NET_CURRENT_DESKTOP 2>/dev/null \
+              | awk -v tag="$EVENT_TAG" '{ printf "%s %s\n", tag, $0; fflush() }' \
+              > "$DAEMON_CMD_PIPE"
+            # xprop died (X server gone, atom missing, etc) — back off then retry
+            sleep 1
+        done
+    ) &
+    WATCHER_PID=$!
+    echo "$(date): Event watcher started (PID $WATCHER_PID)"
+}
+
+stop_event_watcher() {
+    if [[ -n "$WATCHER_PID" ]]; then
+        kill "$WATCHER_PID" 2>/dev/null || true
+        WATCHER_PID=""
+    fi
+}
+
 # Combined daemon that handles both window monitoring and IPC commands
 watch_daemon_with_ipc() {
-    # Single-process daemon: command loop + monitor tick in one place
-    trap 'cleanup_daemon_ipc; echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
+    # Single-process daemon: event watcher + command loop + safety-net tick.
+    trap 'stop_event_watcher; cleanup_daemon_ipc; echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
     trap 'echo "$(date): SIGUSR1 -> reapply layouts"; apply_workspace_layout' SIGUSR1
     trap 'echo "$(date): SIGUSR2 -> wake from idle"' SIGUSR2
 
-    echo "$(date): Watch daemon with IPC started (single loop)"
-    
+    echo "$(date): Watch daemon with IPC started (single loop, event-driven)"
+
     # Create IPC and write PID (deterministic readiness)
     setup_daemon_ipc
     umask 077
@@ -247,33 +289,56 @@ watch_daemon_with_ipc() {
     # Initialize monitor information for daemon functions
     get_screen_info
 
-    # SSOT, lock, and cooldown functions now defined in global scope
-
-    # Open FIFOs once
+    # Open FIFOs once. Bidirectional open keeps EOF away when transient writers close.
     exec 3<>"$DAEMON_CMD_PIPE"
     exec 4<>"$DAEMON_RESP_PIPE"
 
-    local TICK=1.5  # seconds - optimized for better CPU efficiency while maintaining responsiveness
+    # Spawn the X11 event watcher AFTER FD 3 is open so its writes never block
+    # waiting for a reader.
+    start_event_watcher
 
-    echo "$(date): entering main loop"
+    # First-pass layout for any windows already on screen at startup.
+    monitor_tick
+
+    echo "$(date): entering main loop (heartbeat ${SAFETY_TICK}s)"
     while true; do
         local cmd
-        if read -t "$TICK" -r cmd <&3; then
-            # Handle a single command. The response body may be empty or
-            # contain many newlines; an explicit sentinel terminates the
-            # message so the client knows when to stop reading.
-            local resp
-            resp="$(handle_daemon_command "$cmd" 2>&1)"
-            if [[ -n "$resp" ]]; then
-                printf '%s\n' "$resp" >&4
-            fi
-            printf '__DAEMON_RESP_END__\n' >&4
-            # Let WM settle; also keep monitor from clobbering right away
-            cooldown_now 600
+        if read -t "$SAFETY_TICK" -r cmd <&3; then
+            case "$cmd" in
+                "$EVENT_TAG"\ *)
+                    # X11 event from xprop -spy. Brief sleep coalesces follow-up
+                    # property updates that the WM emits in quick succession.
+                    sleep 0.1
+                    monitor_tick
+                    ;;
+                "")
+                    # Empty line — ignore.
+                    ;;
+                *)
+                    # IPC client command. Response body may be empty or contain
+                    # many newlines; sentinel line tells the client where to stop.
+                    local resp
+                    resp="$(handle_daemon_command "$cmd" 2>&1)"
+                    if [[ -n "$resp" ]]; then
+                        printf '%s\n' "$resp" >&4
+                    fi
+                    printf '__DAEMON_RESP_END__\n' >&4
+                    # Cool down so own apply_geometry traffic doesn't immediately
+                    # bounce back through monitor_tick.
+                    cooldown_now 600
+                    ;;
+            esac
             continue
         fi
 
-        # ---- monitor tick ----
+        # Safety-net heartbeat: catches state changes the watched atoms miss
+        # (e.g. minimize/restore via _NET_WM_STATE on individual windows).
+        # Also respawns the watcher if it died silently.
+        if [[ -n "$WATCHER_PID" ]] && ! kill -0 "$WATCHER_PID" 2>/dev/null; then
+            echo "$(date): Event watcher died; respawning"
+            WATCHER_PID=""
+            start_event_watcher
+        fi
         monitor_tick
     done
 }
@@ -490,28 +555,28 @@ show_daemon_status() {
 
 # detect_current_ids_for_ws_mon removed - using list_windows_on_monitor_for_workspace directly
 
-# Simple window change detection - no persistence of window IDs
+# Detect window-set changes for a single (workspace, monitor). No persistence
+# of window IDs — we track the post-filter, per-monitor window count and only
+# flip the dirty bit when it actually moves.
+#
+# The previous "fast path" compared a workspace-wide raw count from `wmctrl
+# -l` against this per-monitor filtered count. Those two numbers are not
+# comparable (one includes docks/menus and spans monitors), so the early exit
+# was always false and full reconciliation ran every tick. With the daemon
+# now event-driven, ticks are rare anyway — drop the shortcut entirely and
+# always do the real comparison.
 reconcile_ws_mon() {  # args: workspace monitor_name
     local ws="$1" mon="$2"
     local k; k="$(key_wsmon "$ws" "$mon")"
-    
-    # Quick window count check first (fast path for stable windows)
-    local quick_count
-    quick_count=$(wmctrl -l 2>/dev/null | awk -v ws="$ws" '$2==ws || $2==-1' | wc -l)
-    local last_count="${WINDOW_COUNT["$k"]-0}"
-    
-    # Early exit if count unchanged (major CPU savings)
-    if [[ "$quick_count" -eq "$last_count" ]]; then
-        return 0
-    fi
-    
-    # Full reconciliation only when count changed
+
     local current_windows
     current_windows="$(get_windows_ordered "$mon")"
-    local current_count
-    current_count=$(echo "$current_windows" | grep -c . 2>/dev/null || echo 0)
-    
-    # Update tracking
+    local current_count=0
+    if [[ -n "$current_windows" ]]; then
+        current_count=$(printf '%s\n' "$current_windows" | grep -c .)
+    fi
+
+    local last_count="${WINDOW_COUNT["$k"]-0}"
     if [[ "$current_count" -ne "$last_count" ]]; then
         WINDOW_DIRTY["$k"]=1
         WINDOW_COUNT["$k"]=$current_count
@@ -544,18 +609,19 @@ monitor_tick() {
         k="$(key_wsmon "$ws" "$monitor_name")"
         local dirty="${WINDOW_DIRTY["$k"]-0}"
         if is_auto_layout_enabled && [[ "$dirty" -eq 1 ]] && monitor_should_apply; then
-            # Debounce rapid changes to avoid excessive layout applications
+            # Per-monitor debounce: if THIS monitor was just applied, skip until
+            # DEBOUNCE_DELAY elapses. Other monitors are unaffected.
             local now=$(date +%s)
-            local time_since_last_change=$((now - LAST_CHANGE_TIME))
-            
+            local last="${LAST_CHANGE_TIME["$k"]-0}"
+            local time_since_last_change=$((now - last))
+
             if [[ $time_since_last_change -ge $DEBOUNCE_DELAY ]]; then
-                # Apply layout after debounce delay
                 echo "$(date): Applying debounced layout to monitor $monitor_name"
                 reapply_saved_layout_for_monitor "$ws" "$mon"
                 WINDOW_DIRTY["$k"]=0
-                LAST_CHANGE_TIME=$now
+                LAST_CHANGE_TIME["$k"]=$now
             else
-                # Still within debounce period, keep dirty flag
+                # Still within this monitor's own debounce window; leave dirty flag.
                 echo "$(date): Debouncing changes on monitor $monitor_name (${time_since_last_change}s < ${DEBOUNCE_DELAY}s)"
             fi
         fi
