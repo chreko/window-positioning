@@ -69,6 +69,38 @@ wmctrl -i -r "$id" -e "0,$((target_x - L)),$((target_y - T)),$w,$h"
 wait_window_settled "$id"
 ```
 
+## Self-correcting applies: `apply_geometry` and `apply_geom_adaptive` (frame branch)
+
+`apply_geometry` and the frame branch of `apply_geom_adaptive` verify the
+result after `wait_window_settled` and re-apply once if drift exceeds a 2 px
+epsilon on any axis. The helper `_geom_drift_exceeds` reads back via
+`get_window_frame_geometry_wmctrl` (xwininfo space) and compares against the
+target shifted by `(L, T)` — see the helper for the round-trip arithmetic.
+
+This eliminates the visible 1-2 s reflow snap that the daemon's SIGUSR1-driven
+second pass produced previously: the second pass now happens inline, only
+when needed. The `trigger_daemon_reapply` calls in `auto_layout_and_reset_monitor`
+(`lib/layouts.sh`), `master_stack_layout_current_monitor` (`lib/daemon.sh`),
+and `center_master_layout_current_monitor` (`lib/daemon.sh`) are now redundant
+no-ops in steady state; they're left in place as belt-and-suspenders for now.
+
+Cap: exactly **one** retry. Toolkits with `WM_NORMAL_HINTS` size increments
+(xfce4-terminal, thunar, etc.) will always quantize the requested W/H by a few
+px; we accept that floor after the single retry. Same convergence floor as the
+daemon's reapply produced previously.
+
+The client branch of `apply_geom_adaptive` is intentionally **not** wrapped:
+`detect_wmctrl_coord_mode` always concludes "frame" on xfwm4 (its no-op probe
+can't distinguish), so the client branch is dead today, and the existing probe
+is documented broken — adding verify-retry there would falsely double the
+`(L, T)` shift in the comparison.
+
+`swap_window_geometries`, `cycle_window_positions`, and
+`reverse_cycle_window_positions` are also **not** self-correcting. They use the
+"raw `wmctrl -e` with manual `(L, T)` subtraction" pattern documented above,
+settled on after the revert in commit `407b3e4`. Wrapping them is a possible
+follow-up but would muddy that revert's narrative.
+
 ## Daemon IPC: why diagnostic logs use `>&6`
 
 `lib/daemon.sh:watch_daemon_with_ipc` opens fd 6 as a dup of stdout, and

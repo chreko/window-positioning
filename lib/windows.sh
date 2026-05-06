@@ -144,8 +144,16 @@ apply_geom_adaptive() {  # id targetFrameX targetFrameY width height
                            | awk -F' = ' '{print $2}' | sed 's/, / /g')
         : "${L:=0}"; : "${T:=0}"
         _apply_with_wmctrl "$id" "$((fx + L))" "$((fy + T))" "$w" "$h"
+        wait_window_settled "$id"
+        # Client-mode verify intentionally omitted: WM-mode probe is unreliable
+        # (see docs/DEVELOPMENT.md) and this branch never executes on xfwm4.
     else
         _apply_with_wmctrl "$id" "$fx" "$fy" "$w" "$h"
+        wait_window_settled "$id"
+        if _geom_drift_exceeds "$id" "$fx" "$fy" "$w" "$h"; then
+            _apply_with_wmctrl "$id" "$fx" "$fy" "$w" "$h"
+            wait_window_settled "$id"
+        fi
     fi
 }
 
@@ -181,13 +189,46 @@ wait_window_settled() {
     return 0
 }
 
-# Apply geometry to window. Waits for the WM to commit the change before
-# returning so subsequent applies see a stable target.
+# Returns 0 (shell-true) iff the window's actual geometry differs from the
+# wmctrl-input target (tx,ty,tw,th) by more than EPS px on any axis. Returns 1
+# on no drift OR readback failure (window destroyed mid-apply, etc.) so the
+# caller's "if exceeds; then retry; fi" simply does nothing on failure —
+# fail-soft.
+#
+# tx,ty are the raw values passed to `wmctrl -e` (pre-shift). On xfwm4 the
+# window's xwininfo position after apply is (tx+L, ty+T) and `wmctrl -lG` reads
+# xwininfo space — so the readback's expected x,y is (tx+L, ty+T). Width/height
+# are unaffected. See docs/DEVELOPMENT.md.
+_geom_drift_exceeds() {
+    local id="$1" tx="$2" ty="$3" tw="$4" th="$5"
+    local eps=2
+    local back rx ry rw rh
+    back=$(get_window_frame_geometry_wmctrl "$id") || return 1
+    [[ -z "$back" ]] && return 1
+    IFS=',' read -r rx ry rw rh <<<"$back"
+    local L R T B
+    read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
+                       | awk -F' = ' '{print $2}' | sed 's/, / /g')
+    : "${L:=0}"; : "${T:=0}"
+    local exp_x=$((tx + L)) exp_y=$((ty + T))
+    local dx=$(( rx - exp_x )); (( dx < 0 )) && dx=$(( -dx ))
+    local dy=$(( ry - exp_y )); (( dy < 0 )) && dy=$(( -dy ))
+    local dw=$(( rw - tw ));    (( dw < 0 )) && dw=$(( -dw ))
+    local dh=$(( rh - th ));    (( dh < 0 )) && dh=$(( -dh ))
+    (( dx > eps || dy > eps || dw > eps || dh > eps ))
+}
+
+# Apply geometry to window. Waits for the WM to commit the change, then
+# verifies the result and re-applies once if drift exceeds the eps threshold.
 apply_geometry() {
     local id="$1" x="$2" y="$3" w="$4" h="$5"
     echo "$(date '+%H:%M:%S.%3N') apply_geometry id=$id -> X=$x Y=$y W=$w H=$h"
     wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
     wait_window_settled "$id"
+    if _geom_drift_exceeds "$id" "$x" "$y" "$w" "$h"; then
+        wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
+        wait_window_settled "$id"
+    fi
 }
 
 # Move window to workspace
