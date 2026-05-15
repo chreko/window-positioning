@@ -428,7 +428,7 @@ auto_layout_and_reset_monitor() {
     local windows_on_monitor=()
     while IFS= read -r line; do
         [[ -n "$line" ]] && windows_on_monitor+=("$line")
-    done < <(get_windows_ordered "$monitor_name")
+    done < <(get_windows_ordered "$monitor_name" "" "$workspace")
 
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
 }
@@ -441,9 +441,14 @@ reapply_saved_layout_for_monitor() {
 
     IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
 
+    # Pass workspace through so the window-list filter is consistent with the
+    # saved-layout lookup below. Without this, a workspace switch during the
+    # apply (these calls take 5-7s end-to-end) lets get_visible_windows read
+    # the new desktop live via xdotool, and we end up applying the stale
+    # workspace's default-auto fallback to fresh-workspace windows.
     local master_windows=()
     local window_list
-    window_list=$(get_windows_ordered "$monitor_name")
+    window_list=$(get_windows_ordered "$monitor_name" "" "$workspace")
     if [[ -n "$window_list" ]]; then
         readarray -t master_windows <<< "$window_list"
     fi
@@ -509,7 +514,7 @@ auto_layout_all_monitors() {
 
         local windows_on_monitor=()
         local window_list
-        window_list=$(get_windows_ordered "$monitor_name")
+        window_list=$(get_windows_ordered "$monitor_name" "" "$workspace")
         if [[ -n "$window_list" ]]; then
             readarray -t windows_on_monitor <<< "$window_list"
         fi

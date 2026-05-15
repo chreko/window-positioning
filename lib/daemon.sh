@@ -486,7 +486,7 @@ reconcile_ws_mon() {  # args: workspace monitor_name
     local k; k="$(key_wsmon "$ws" "$mon")"
 
     local current_windows
-    current_windows="$(get_windows_ordered "$mon")"
+    current_windows="$(get_windows_ordered "$mon" "" "$ws")"
     local current_count=0
     if [[ -n "$current_windows" ]]; then
         current_count=$(printf '%s\n' "$current_windows" | grep -c .)
@@ -681,17 +681,20 @@ master_stack_layout_current_monitor() {
     get_screen_info
     local current_monitor=$(get_current_monitor)
     local current_workspace=$(get_current_workspace)
-    
-    # Get windows using live snapshot with configured ordering strategy
+
+    # Get windows using live snapshot with configured ordering strategy.
+    # Pass current_workspace so the filter stays consistent with what we'll
+    # save under save_workspace_monitor_layout below — even if the user
+    # switches workspaces while the apply is running.
     IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
     local windows_on_monitor=()
-    mapfile -t windows_on_monitor < <(get_windows_ordered "$monitor_name")
-    
+    mapfile -t windows_on_monitor < <(get_windows_ordered "$monitor_name" "" "$current_workspace")
+
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
         return 1
     fi
-    
+
     IFS=':' read -r name mx my mw mh <<< "$current_monitor"
     local num_windows=${#windows_on_monitor[@]}
     echo "Monitor $name: Applying master-stack ($orientation, ${percentage}%) to $num_windows window(s)"
@@ -738,7 +741,7 @@ master_stack_layout() {
     for monitor in "${MONITORS[@]}"; do
         # Get windows from persistent list for this monitor
         IFS=':' read -r name mx my mw mh <<< "$monitor"
-        local current_list=$(get_windows_ordered "$name")
+        local current_list=$(get_windows_ordered "$name" "" "$current_workspace")
         local windows_on_monitor=()
         if [[ -n "$current_list" ]]; then
             read -ra windows_on_monitor <<< "$current_list"
@@ -788,17 +791,18 @@ center_master_layout_current_monitor() {
     get_screen_info
     local current_monitor=$(get_current_monitor)
     local current_workspace=$(get_current_workspace)
-    
-    # Get windows using live snapshot with configured ordering strategy
+
+    # Pass current_workspace to keep the window-list filter consistent with the
+    # save key below — see master_stack_layout_current_monitor for the reason.
     IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
     local windows_on_monitor=()
-    mapfile -t windows_on_monitor < <(get_windows_ordered "$monitor_name")
-    
+    mapfile -t windows_on_monitor < <(get_windows_ordered "$monitor_name" "" "$current_workspace")
+
     if [[ ${#windows_on_monitor[@]} -eq 0 ]]; then
         echo "No visible windows on current monitor"
         return 1
     fi
-    
+
     IFS=':' read -r name mx my mw mh <<< "$current_monitor"
     local num_windows=${#windows_on_monitor[@]}
     echo "Monitor $name: Applying center master layout (${percentage}%) to $num_windows window(s)"

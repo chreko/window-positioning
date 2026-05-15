@@ -262,7 +262,13 @@ load_position() {
 # Get all visible windows on current desktop
 get_visible_windows() {
     local monitor_name="$1"  # Optional: if provided, filter by this monitor
-    local current_desktop=$(xdotool get_desktop)
+    # Optional 2nd arg: workspace ID to filter by. Defaults to the live desktop.
+    # Pass this from inside the daemon's apply path so the window list is
+    # consistent with the workspace captured at decision time — otherwise the
+    # live xdotool read can drift mid-apply if the user switches workspaces,
+    # and a stale-workspace lookup ends up applying to fresh-workspace windows.
+    local workspace_override="${2:-}"
+    local current_desktop="${workspace_override:-$(xdotool get_desktop)}"
     
     wmctrl -l | while read -r line; do
         local id=$(echo "$line" | awk '{print $1}')
@@ -368,7 +374,8 @@ get_visible_windows() {
 # Get windows sorted by spatial position (left-to-right, top-to-bottom) instead of chronological order
 get_visible_windows_by_position() {
     local monitor_name="$1"  # Optional: if provided, filter by this monitor
-    
+    local workspace_override="${2:-}"  # see get_visible_windows()
+
     # Get stacking order from X11 (bottom to top)
     local stacking_order=()
     local stacking_raw=$(xprop -root _NET_CLIENT_LIST_STACKING 2>/dev/null | grep "window id" | sed 's/.*window id # //; s/,//g')
@@ -398,8 +405,8 @@ get_visible_windows_by_position() {
             # Store: "id:x:y:z_index"
             window_data+=("$id:$x:$y:$z_index")
         fi
-    done < <(get_visible_windows "$monitor_name")
-    
+    done < <(get_visible_windows "$monitor_name" "$workspace_override")
+
     # Sort by Y coordinate (top to bottom), then X coordinate (left to right), then Z-order
     printf '%s\n' "${window_data[@]}" | sort -t: -k3,3n -k2,2n -k4,4n | cut -d: -f1
 }
@@ -409,7 +416,8 @@ get_visible_windows_by_position() {
 # Get windows sorted by stacking order (most recently active first) - stable for master layouts
 get_visible_windows_by_stacking() {
     local monitor_name="$1"  # Optional: if provided, filter by this monitor
-    
+    local workspace_override="${2:-}"  # see get_visible_windows()
+
     # Get stacking order from X11 (bottom to top)
     local stacking_order=()
     local stacking_raw=$(xprop -root _NET_CLIENT_LIST_STACKING 2>/dev/null | grep "window id" | sed 's/.*window id # //; s/,//g')
@@ -433,8 +441,8 @@ get_visible_windows_by_stacking() {
         
         # Store: "id:z_index"
         window_data+=("$id:$z_index")
-    done < <(get_visible_windows "$monitor_name")
-    
+    done < <(get_visible_windows "$monitor_name" "$workspace_override")
+
     # Sort by Z-order (most recent first)
     printf '%s\n' "${window_data[@]}" | sort -t: -k2,2nr | cut -d: -f1
 }
@@ -1046,20 +1054,21 @@ WINDOW_ORDER_STRATEGY="${WINDOW_ORDER_STRATEGY:-position}"
 get_windows_ordered() {
     local monitor_name="${1:-}"  # Optional monitor filter
     local strategy="${2:-$WINDOW_ORDER_STRATEGY}"
-    
+    local workspace_override="${3:-}"  # see get_visible_windows()
+
     case "$strategy" in
         position|spatial)
-            get_visible_windows_by_position "$monitor_name"
+            get_visible_windows_by_position "$monitor_name" "$workspace_override"
             ;;
         creation|chronological)
-            get_visible_windows "$monitor_name"
+            get_visible_windows "$monitor_name" "$workspace_override"
             ;;
         stacking|focus)
-            get_visible_windows_by_stacking "$monitor_name"
+            get_visible_windows_by_stacking "$monitor_name" "$workspace_override"
             ;;
         *)
             echo "Warning: Unknown window ordering strategy '$strategy', defaulting to position" >&2
-            get_visible_windows_by_position "$monitor_name"
+            get_visible_windows_by_position "$monitor_name" "$workspace_override"
             ;;
     esac
 }
