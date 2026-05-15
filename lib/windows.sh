@@ -134,6 +134,7 @@ detect_wmctrl_coord_mode() {
 apply_geom_adaptive() {  # id targetFrameX targetFrameY width height
     detect_wmctrl_coord_mode
     local id="$1" fx="$2" fy="$3" w="$4" h="$5"
+    echo "$(date '+%H:%M:%S.%3N') apply_geom_adaptive(${WMCTRL_COORD_MODE}) id=$id -> X=$fx Y=$fy W=$w H=$h"
     if [[ "$WMCTRL_COORD_MODE" == "client" ]]; then
         # Convert frame X/Y -> client X/Y (only when needed)
         local cx cy cw ch L R T B info x y
@@ -184,9 +185,9 @@ wait_window_settled() {
 # returning so subsequent applies see a stable target.
 apply_geometry() {
     local id="$1" x="$2" y="$3" w="$4" h="$5"
+    echo "$(date '+%H:%M:%S.%3N') apply_geometry id=$id -> X=$x Y=$y W=$w H=$h"
     wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
     wait_window_settled "$id"
-    echo "Window positioned at: X=$x, Y=$y, Width=$w, Height=$h"
 }
 
 # Move window to workspace
@@ -233,9 +234,19 @@ get_visible_windows() {
         local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED")
         [[ -n "$state" ]] && continue
         
-        # Skip panels, docks, and desktop
+        # Skip non-tileable window types. DIALOG, TOOLTIP, and UTILITY are
+        # excluded because short-lived popups of these types (file pickers,
+        # modal confirmations) would otherwise enter the tileable set and
+        # trigger an N -> N+1 -> N reapply cycle when they close, snapping
+        # user windows away and back across the daemon's debounce window.
         local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
-        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION"; then
+        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION|DIALOG|TOOLTIP|UTILITY"; then
+            continue
+        fi
+
+        # Skip sub-windows that are transient for another window (modal
+        # popups, attached dialogs). Same reasoning as the type filter.
+        if xprop -id "$id" WM_TRANSIENT_FOR 2>/dev/null | grep -q "window id"; then
             continue
         fi
         

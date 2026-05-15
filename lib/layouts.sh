@@ -431,15 +431,13 @@ auto_layout_and_reset_monitor() {
     done < <(get_windows_ordered "$monitor_name")
 
     auto_layout_single_monitor "$monitor" "${windows_on_monitor[@]}"
-
-    # Daemon-side helper; defined in daemon.sh and resolved at call time.
-    trigger_daemon_reapply >/dev/null 2>&1
 }
 
 # Reapply the saved layout (or fall back to auto) for one monitor.
 reapply_saved_layout_for_monitor() {
     local workspace="$1"
     local monitor="$2"
+    local _t0_ms=$(date +%s%3N)
 
     IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
 
@@ -486,6 +484,9 @@ reapply_saved_layout_for_monitor() {
             { echo "$(date): reapply ws=$workspace monitor=$monitor_name count=$num_windows -> no-saved (applying default auto-layout)"; } >&6 2>/dev/null
             auto_layout_single_monitor "$monitor" "${master_windows[@]}"
         fi
+
+        local _elapsed_ms=$(( $(date +%s%3N) - _t0_ms ))
+        { echo "$(date): reapply DONE ws=$workspace monitor=$monitor_name count=$num_windows elapsed=${_elapsed_ms}ms"; } >&6 2>/dev/null
     fi
 }
 

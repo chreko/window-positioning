@@ -717,9 +717,6 @@ master_stack_layout_current_monitor() {
     local workspace=$(get_current_workspace)
     IFS=':' read -r monitor_name rest <<< "$current_monitor"
     save_workspace_monitor_layout "$workspace" "$monitor_name" "master $orientation $percentage" ""
-    
-    # Trigger daemon to immediately reapply with new preference
-    trigger_daemon_reapply >/dev/null 2>&1
 }
 
 # Master-stack layouts for all monitors (reuses single-monitor function)
@@ -814,9 +811,6 @@ center_master_layout_current_monitor() {
     local workspace=$(get_current_workspace)
     IFS=':' read -r monitor_name rest <<< "$current_monitor"
     save_workspace_monitor_layout "$workspace" "$monitor_name" "master center $percentage" ""
-    
-    # Trigger daemon to immediately reapply with new preference
-    trigger_daemon_reapply >/dev/null 2>&1
 }
 
 # Adjust master window size by 5% increments
