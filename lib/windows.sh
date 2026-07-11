@@ -73,87 +73,38 @@ get_window_frame_geometry_wmctrl() {
     wmctrl -i -lG | awk -v id="$id" '$1==id{print $3","$4","$5","$6; f=1} END{if(!f) exit 1}'
 }
 
-# Apply geometry using wmctrl (expects either frame or client X/Y depending on WM)
-_apply_with_wmctrl() {  # id x y w h
-    wmctrl -i -r "$1" -e "0,$2,$3,$4,$5" 2>/dev/null
-}
-
-# Optional: client geometry (from xwininfo + frame extents)
-_get_client_geom() {  # id -> "x,y,w,h"
-    local id="$1" info x y w h L R T B
-    info=$(xwininfo -id "$id")
-    x=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info")
-    y=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info")
-    w=$(awk '/Width:/ {print $NF}' <<<"$info")
-    h=$(awk '/Height:/ {print $NF}' <<<"$info")
+# Apply one wmctrl request that lands the window's FRAME outer corner exactly
+# at (fx, fy), by subtracting the window's own frame extents — the pattern
+# validated in commit 407b3e4 and docs/DEVELOPMENT.md. Extents are fetched
+# fresh on every call: freshly-mapped windows may not have _NET_FRAME_EXTENTS
+# yet (defaults to 0), and the retry in the callers then re-applies with the
+# real values once the WM has set them.
+_apply_frame_exact() {  # id fx fy w h
+    local id="$1" fx="$2" fy="$3" w="$4" h="$5"
+    local L R T B
     read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
                        | awk -F' = ' '{print $2}' | sed 's/, / /g')
     : "${L:=0}"; : "${T:=0}"
-    echo "$((x + L)),$((y + T)),$w,$h"
+    wmctrl -i -r "$id" -e "0,$((fx - L)),$((fy - T)),${w},${h}" 2>/dev/null
 }
 
-# ----- Detect how wmctrl -e interprets X/Y on this WM -----
-# Caches in WMCTRL_COORD_MODE: "frame" or "client"
-detect_wmctrl_coord_mode() {
-    [[ -n "${WMCTRL_COORD_MODE:-}" ]] && return 0
-    # Pick the currently active window
-    local active
-    active=$(xprop -root _NET_ACTIVE_WINDOW 2>/dev/null | awk -F'# ' '{print $2}')
-    [[ -z "$active" ]] && { export WMCTRL_COORD_MODE="frame"; return 0; }
-
-    # Baselines
-    local fx fy fw fh cx cy cw ch
-    IFS=',' read -r fx fy fw fh <<<"$(get_window_frame_geometry_wmctrl "$active")"
-    IFS=',' read -r cx cy cw ch <<<"$(_get_client_geom "$active")"
-
-    # Try a no-op apply using FRAME coords
-    _apply_with_wmctrl "$active" "$fx" "$fy" "$fw" "$fh"
-    sleep 0.02
-    # Read back frame position
-    local nfx nfy
-    IFS=',' read -r nfx nfy _ _ <<<"$(get_window_frame_geometry_wmctrl "$active")"
-
-    if [[ "$nfx" == "$fx" && "$nfy" == "$fy" ]]; then
-        export WMCTRL_COORD_MODE="frame"
-    else
-        # Try no-op using CLIENT coords
-        _apply_with_wmctrl "$active" "$cx" "$cy" "$cw" "$ch"
-        sleep 0.02
-        IFS=',' read -r nfx nfy _ _ <<<"$(get_window_frame_geometry_wmctrl "$active")"
-        # If moving to client coords is a no-op, wmctrl wants client
-        if [[ "$nfx" == "$fx" && "$nfy" == "$fy" ]]; then
-            # Some WMs still end up identical; prefer client if first try shifted
-            export WMCTRL_COORD_MODE="client"
-        else
-            export WMCTRL_COORD_MODE="client"
-        fi
-    fi
-}
-
-# Apply geometry in the coordinate space that wmctrl expects on this WM
+# Place a window's frame at an ABSOLUTE xwininfo position (fx, fy), with
+# settle-wait and one drift-corrected retry. This is the right call for
+# round-trip applies: coordinates that were read back from X (presets saved
+# via save_position, etc.) and must land exactly where they were read.
+#
+# Replaces the former detect_wmctrl_coord_mode/apply_geom_adaptive machinery:
+# the coord-mode probe could not classify xfwm4 (a no-op apply never moves,
+# so it always concluded "frame"/pass-through) and raw pass-through shifted
+# every apply down by the title-bar height. See docs/DEVELOPMENT.md.
 apply_geom_adaptive() {  # id targetFrameX targetFrameY width height
-    detect_wmctrl_coord_mode
     local id="$1" fx="$2" fy="$3" w="$4" h="$5"
-    echo "$(date '+%H:%M:%S.%3N') apply_geom_adaptive(${WMCTRL_COORD_MODE}) id=$id -> X=$fx Y=$fy W=$w H=$h"
-    if [[ "$WMCTRL_COORD_MODE" == "client" ]]; then
-        # Convert frame X/Y -> client X/Y (only when needed)
-        local cx cy cw ch L R T B info x y
-        IFS=',' read -r cx cy cw ch <<<"$(_get_client_geom "$id")"  # current client
-        # We only need L,T; get from current window
-        read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-        : "${L:=0}"; : "${T:=0}"
-        _apply_with_wmctrl "$id" "$((fx + L))" "$((fy + T))" "$w" "$h"
+    echo "$(date '+%H:%M:%S.%3N') apply_geom_adaptive id=$id -> X=$fx Y=$fy W=$w H=$h"
+    _apply_frame_exact "$id" "$fx" "$fy" "$w" "$h"
+    wait_window_settled "$id"
+    if _geom_drift_exceeds "$id" "$fx" "$fy" "$w" "$h"; then
+        _apply_frame_exact "$id" "$fx" "$fy" "$w" "$h"
         wait_window_settled "$id"
-        # Client-mode verify intentionally omitted: WM-mode probe is unreliable
-        # (see docs/DEVELOPMENT.md) and this branch never executes on xfwm4.
-    else
-        _apply_with_wmctrl "$id" "$fx" "$fy" "$w" "$h"
-        wait_window_settled "$id"
-        if _geom_drift_exceeds "$id" "$fx" "$fy" "$w" "$h"; then
-            _apply_with_wmctrl "$id" "$fx" "$fy" "$w" "$h"
-            wait_window_settled "$id"
-        fi
     fi
 }
 
@@ -189,44 +140,56 @@ wait_window_settled() {
     return 0
 }
 
-# Returns 0 (shell-true) iff the window's actual geometry differs from the
-# wmctrl-input target (tx,ty,tw,th) by more than EPS px on any axis. Returns 1
-# on no drift OR readback failure (window destroyed mid-apply, etc.) so the
-# caller's "if exceeds; then retry; fi" simply does nothing on failure —
-# fail-soft.
+# Returns 0 (shell-true) iff the window's actual FRAME position/size (xwininfo
+# space, as read back via `wmctrl -lG`) differs from the ABSOLUTE frame target
+# (fx,fy,tw,th) by more than EPS px on any axis. Returns 1 on no drift OR
+# readback failure (window destroyed mid-apply, etc.) so the caller's
+# "if exceeds; then retry; fi" simply does nothing on failure — fail-soft.
 #
-# tx,ty are the raw values passed to `wmctrl -e` (pre-shift). On xfwm4 the
-# window's xwininfo position after apply is (tx+L, ty+T) and `wmctrl -lG` reads
-# xwininfo space — so the readback's expected x,y is (tx+L, ty+T). Width/height
-# are unaffected. See docs/DEVELOPMENT.md.
+# Both callers (apply_geometry, apply_geom_adaptive) now apply via
+# _apply_frame_exact, which subtracts the window's own extents — so the
+# expected readback IS the target, with no per-window (L, T) shift. This also
+# means a first apply made while _NET_FRAME_EXTENTS was still unset (fresh
+# window, extents defaulted to 0) is detected as drift and corrected by the
+# retry using the by-then-real extents.
 _geom_drift_exceeds() {
-    local id="$1" tx="$2" ty="$3" tw="$4" th="$5"
+    local id="$1" fx="$2" fy="$3" tw="$4" th="$5"
     local eps=2
     local back rx ry rw rh
     back=$(get_window_frame_geometry_wmctrl "$id") || return 1
     [[ -z "$back" ]] && return 1
     IFS=',' read -r rx ry rw rh <<<"$back"
-    local L R T B
-    read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
-                       | awk -F' = ' '{print $2}' | sed 's/, / /g')
-    : "${L:=0}"; : "${T:=0}"
-    local exp_x=$((tx + L)) exp_y=$((ty + T))
-    local dx=$(( rx - exp_x )); (( dx < 0 )) && dx=$(( -dx ))
-    local dy=$(( ry - exp_y )); (( dy < 0 )) && dy=$(( -dy ))
-    local dw=$(( rw - tw ));    (( dw < 0 )) && dw=$(( -dw ))
-    local dh=$(( rh - th ));    (( dh < 0 )) && dh=$(( -dh ))
+    local dx=$(( rx - fx )); (( dx < 0 )) && dx=$(( -dx ))
+    local dy=$(( ry - fy )); (( dy < 0 )) && dy=$(( -dy ))
+    local dw=$(( rw - tw )); (( dw < 0 )) && dw=$(( -dw ))
+    local dh=$(( rh - th )); (( dh < 0 )) && dh=$(( -dh ))
     (( dx > eps || dy > eps || dw > eps || dh > eps ))
 }
 
-# Apply geometry to window. Waits for the WM to commit the change, then
-# verifies the result and re-applies once if drift exceeds the eps threshold.
+# Apply geometry to window (LAYOUT semantics). Waits for the WM to commit the
+# change, then verifies the result and re-applies once if drift exceeds the
+# eps threshold.
+#
+# Landing rule: the window's FRAME lands at (x, y + DECORATION_HEIGHT),
+# regardless of that window's own frame extents. Historically this function
+# passed x/y raw to `wmctrl -e`, which on xfwm4 lands the frame at
+# (x + L, y + T) using each window's OWN extents — all layout math in
+# lib/layouts.sh and lib/interactive.sh was tuned around that landing for
+# standard windows (L≈1, T=DECORATION_HEIGHT). Windows with different extents
+# (client-side-decorated dom0 apps vs xfwm4-decorated AppVM windows in Qubes)
+# therefore landed a title-bar-height higher than their neighbors in the same
+# layout. Normalizing to DECORATION_HEIGHT keeps standard windows exactly
+# where they always were while pulling odd-extents windows into alignment —
+# no layout re-tuning needed. See docs/DEVELOPMENT.md.
 apply_geometry() {
     local id="$1" x="$2" y="$3" w="$4" h="$5"
     echo "$(date '+%H:%M:%S.%3N') apply_geometry id=$id -> X=$x Y=$y W=$w H=$h"
-    wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
+    local fx=$x
+    local fy=$(( y + ${DECORATION_HEIGHT:-24} ))
+    _apply_frame_exact "$id" "$fx" "$fy" "$w" "$h"
     wait_window_settled "$id"
-    if _geom_drift_exceeds "$id" "$x" "$y" "$w" "$h"; then
-        wmctrl -i -r "$id" -e "0,${x},${y},${w},${h}"
+    if _geom_drift_exceeds "$id" "$fx" "$fy" "$w" "$h"; then
+        _apply_frame_exact "$id" "$fx" "$fy" "$w" "$h"
         wait_window_settled "$id"
     fi
 }
@@ -870,11 +833,9 @@ swap_window_geometries() {
 
     # xfwm4 quirk: `wmctrl -e "0,X,Y,W,H"` lands the window at xwininfo
     # position (X+L, Y+T). To place a window at xwininfo (X, Y), pass
-    # `wmctrl -e (X-L, Y-T)`. apply_geom_adaptive's "frame" / "client"
-    # detection doesn't model this on xfwm4 (the no-op probe in
-    # detect_wmctrl_coord_mode gets a false "frame" verdict because moving
-    # to the current position appears unchanged), so we apply the
-    # correction directly here.
+    # `wmctrl -e (X-L, Y-T)` — the pattern settled on in commit 407b3e4,
+    # applied inline here (equivalent to _apply_frame_exact, kept explicit
+    # to preserve that revert's narrative).
     local L1 R1 T1 B1 L2 R2 T2 B2
     read -r L1 R1 T1 B1 < <(xprop -id "$win1" _NET_FRAME_EXTENTS 2>/dev/null \
                            | awk -F' = ' '{print $2}' | sed 's/, / /g')

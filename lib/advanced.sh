@@ -42,8 +42,12 @@ simultaneous_resize() {
 
     case "$direction" in
         expand-right|shrink-right)
+            # Coordinates here are read back from xwininfo (absolute frame
+            # positions), so use the absolute apply — apply_geometry's layout
+            # semantics would shift the window down by DECORATION_HEIGHT on
+            # every resize.
             local new_tw=$((tw + sign * amount))
-            apply_geometry "$target_id" $tx $ty $new_tw $th
+            apply_geom_adaptive "$target_id" $tx $ty $new_tw $th
 
             # Adjust right-adjacent windows
             for adj in "${adjacent[@]}"; do
@@ -54,13 +58,13 @@ simultaneous_resize() {
                     IFS=',' read -r ax ay aw ah <<< "$adj_geom"
                     local new_ax=$((ax + sign * amount))
                     local new_aw=$((aw - sign * amount))
-                    apply_geometry "$adj_id" $new_ax $ay $new_aw $ah
+                    apply_geom_adaptive "$adj_id" $new_ax $ay $new_aw $ah
                 fi
             done
             ;;
         expand-down|shrink-down)
             local new_th=$((th + sign * amount))
-            apply_geometry "$target_id" $tx $ty $tw $new_th
+            apply_geom_adaptive "$target_id" $tx $ty $tw $new_th
 
             # Adjust bottom-adjacent windows
             for adj in "${adjacent[@]}"; do
@@ -71,7 +75,7 @@ simultaneous_resize() {
                     IFS=',' read -r ax ay aw ah <<< "$adj_geom"
                     local new_ay=$((ay + sign * amount))
                     local new_ah=$((ah - sign * amount))
-                    apply_geometry "$adj_id" $new_ax $new_ay $aw $new_ah
+                    apply_geom_adaptive "$adj_id" $new_ax $new_ay $aw $new_ah
                 fi
             done
             ;;
