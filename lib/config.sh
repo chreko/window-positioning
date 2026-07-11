@@ -122,10 +122,84 @@ load_config() {
     IGNORED_APPS=${IGNORED_APPS:-"About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes,cs:Unlock Keyring,cs:xfce4-panel,xfce4-*-settings,xfce4-*-preferences,xfce4-settings-manager"}
     validate_ignored_apps
     export IGNORED_APPS
+    compile_ignored_patterns
 
     # Watch mode auto-layout default
     WATCH_AUTO_LAYOUT=${WATCH_AUTO_LAYOUT:-true}
     export WATCH_AUTO_LAYOUT
+}
+
+# Compile IGNORED_APPS into ready-to-use regex arrays, ONCE per config load.
+# get_visible_windows previously recompiled every pattern with ~5 forked
+# sed/echo/grep processes per pattern, per window, per call — on the daemon's
+# hot path that was the single largest CPU cost per tick (dom0 has 4 vcores;
+# fork rate is the budget). Matching now uses bash [[ =~ ]] with these
+# precompiled patterns and forks nothing.
+#
+# Semantics preserved from the original per-call compiler (commits 65ea404,
+# c1fda77): `cs:` prefix = case-sensitive; `*`/`?` wildcards; no wildcard =
+# exact match; trailing-only wildcard = anchored start; leading-only wildcard
+# = anchored end; wildcards on both ends or mid-pattern = match anywhere.
+# Case-insensitive matching is done by lowercasing both the pattern (stored
+# pre-lowercased in IGNORED_RE) and the tested string — bash regex has no
+# inline case flag, and toggling nocasematch in daemon scope is a footgun.
+declare -a IGNORED_RE=()   # compiled ERE, pre-lowercased unless case-sensitive
+declare -a IGNORED_RE_CS=() # "1" if case-sensitive, "0" otherwise
+compile_ignored_patterns() {
+    IGNORED_RE=()
+    IGNORED_RE_CS=()
+    [[ -z "$IGNORED_APPS" ]] && return 0
+
+    local -a apps=()
+    IFS=',' read -ra apps <<< "$IGNORED_APPS"
+    local app pattern cs
+    for app in "${apps[@]}"; do
+        # Trim whitespace (pure bash)
+        app="${app#"${app%%[![:space:]]*}"}"
+        app="${app%"${app##*[![:space:]]}"}"
+        [[ -z "$app" ]] && continue
+
+        cs=0
+        if [[ "$app" == cs:* ]]; then
+            cs=1
+            app="${app#cs:}"
+        fi
+
+        # Escape regex specials except * and ?, then convert wildcards
+        pattern=$(printf '%s' "$app" | sed 's/\([[\\.^$()+{}|]\)/\\\1/g; s/\*/\.\*/g; s/\?/\./g')
+
+        # Anchor based on wildcard position (same rules as before)
+        if [[ "$app" != *"*"* && "$app" != *"?"* ]]; then
+            pattern="^${pattern}$"
+        elif [[ "$app" == *"*" && "$app" != "*"* ]]; then
+            pattern="^${pattern}"
+        elif [[ "$app" == "*"* && "$app" != *"*" ]]; then
+            pattern="${pattern}$"
+        fi
+
+        if [[ "$cs" == 1 ]]; then
+            IGNORED_RE+=("$pattern")
+        else
+            IGNORED_RE+=("${pattern,,}")
+        fi
+        IGNORED_RE_CS+=("$cs")
+    done
+}
+
+# Test whether a window's class/title matches any ignored pattern.
+# Args: class title. Returns 0 (match/skip) or 1. Forks nothing.
+matches_ignored_app() {
+    local class="$1" title="$2"
+    local class_lc="${class,,}" title_lc="${title,,}"
+    local i
+    for ((i=0; i<${#IGNORED_RE[@]}; i++)); do
+        if [[ "${IGNORED_RE_CS[i]}" == 1 ]]; then
+            [[ "$class" =~ ${IGNORED_RE[i]} || "$title" =~ ${IGNORED_RE[i]} ]] && return 0
+        else
+            [[ "$class_lc" =~ ${IGNORED_RE[i]} || "$title_lc" =~ ${IGNORED_RE[i]} ]] && return 0
+        fi
+    done
+    return 1
 }
 
 # Validate IGNORED_APPS syntax

@@ -509,8 +509,11 @@ reconcile_ws_mon() {  # args: workspace monitor_name
     local ws="$1" mon="$2"
     local k; k="$(key_wsmon "$ws" "$mon")"
 
+    # Membership count only — use the unordered list. get_windows_ordered's
+    # spatial sort reads per-window geometry (one xwininfo+xprop per window)
+    # that a count can never use. Same filter, same membership, fewer forks.
     local current_windows
-    current_windows="$(get_windows_ordered "$mon" "" "$ws")"
+    current_windows="$(get_visible_windows "$mon" "$ws")"
     local current_count=0
     if [[ -n "$current_windows" ]]; then
         current_count=$(printf '%s\n' "$current_windows" | grep -c .)

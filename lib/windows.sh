@@ -233,103 +233,58 @@ get_visible_windows() {
     local workspace_override="${2:-}"
     local current_desktop="${workspace_override:-$(xdotool get_desktop)}"
     
-    wmctrl -l | while read -r line; do
-        local id=$(echo "$line" | awk '{print $1}')
-        local desktop=$(echo "$line" | awk '{print $2}')
-        
+    wmctrl -l | while read -r id desktop _; do
         # Skip windows not on current desktop
         [[ "$desktop" != "$current_desktop" && "$desktop" != "-1" ]] && continue
-        
-        # Check if window is minimized or maximized
-        local state=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -E "HIDDEN|MAXIMIZED")
-        [[ -n "$state" ]] && continue
-        
+
+        # Fetch ALL needed properties with a single xprop call (was 4-5
+        # separate forks per window) and parse in bash. Fork rate is the CPU
+        # budget on dom0 — see compile_ignored_patterns in lib/config.sh.
+        local props
+        props=$(xprop -id "$id" _NET_WM_STATE _NET_WM_WINDOW_TYPE WM_TRANSIENT_FOR WM_CLASS _NET_WM_NAME WM_NAME 2>/dev/null)
+
+        local line state="" type="" transient="" class="" net_name="" wm_name=""
+        while IFS= read -r line; do
+            case "$line" in
+                _NET_WM_STATE*)       state="$line" ;;
+                _NET_WM_WINDOW_TYPE*) type="$line" ;;
+                WM_TRANSIENT_FOR*)    transient="$line" ;;
+                WM_CLASS*)            class="${line#*= }"; class="${class//\"/}" ;;
+                _NET_WM_NAME*)        [[ "$line" =~ =\ \"(.*)\" ]] && net_name="${BASH_REMATCH[1]}" ;;
+                WM_NAME*)             [[ "$line" =~ =\ \"(.*)\" ]] && wm_name="${BASH_REMATCH[1]}" ;;
+            esac
+        done <<< "$props"
+
+        # Skip minimized or maximized windows (matches MAXIMIZED_VERT/_HORZ)
+        [[ "$state" == *HIDDEN* || "$state" == *MAXIMIZED* ]] && continue
+
         # Skip non-tileable window types. DIALOG, TOOLTIP, and UTILITY are
         # excluded because short-lived popups of these types (file pickers,
         # modal confirmations) would otherwise enter the tileable set and
         # trigger an N -> N+1 -> N reapply cycle when they close, snapping
         # user windows away and back across the daemon's debounce window.
-        local type=$(xprop -id "$id" _NET_WM_WINDOW_TYPE 2>/dev/null)
-        if echo "$type" | grep -qE "DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION|DIALOG|TOOLTIP|UTILITY"; then
+        if [[ "$type" =~ DOCK|DESKTOP|TOOLBAR|MENU|SPLASH|NOTIFICATION|DIALOG|TOOLTIP|UTILITY ]]; then
             continue
         fi
 
         # Skip sub-windows that are transient for another window (modal
         # popups, attached dialogs). Same reasoning as the type filter.
-        if xprop -id "$id" WM_TRANSIENT_FOR 2>/dev/null | grep -q "window id"; then
-            continue
-        fi
-        
-        # Skip ignored applications from config
-        local class=$(xprop -id "$id" WM_CLASS 2>/dev/null | sed -n 's/.*= \(.*\)/\1/p' | tr -d '"')
-        local title=$(xprop -id "$id" _NET_WM_NAME 2>/dev/null | sed -n 's/.*= "\(.*\)"/\1/p')
-        [[ -z "$title" ]] && title=$(xprop -id "$id" WM_NAME 2>/dev/null | sed -n 's/.*= "\(.*\)"/\1/p')
-        if [[ -n "$IGNORED_APPS" && (-n "$class" || -n "$title") ]]; then
-            # Split comma list without glob expansion against CWD
-            local ignored_array=()
-            IFS=',' read -ra ignored_array <<< "$IGNORED_APPS"
-            local should_skip=false
-            for app in "${ignored_array[@]}"; do
-                # Trim whitespace
-                app=$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                [[ -z "$app" ]] && continue
-                
-                # Check for case-sensitive prefix
-                local case_sensitive=false
-                if [[ "$app" == cs:* ]]; then
-                    case_sensitive=true
-                    app="${app#cs:}"
-                fi
-                
-                # Convert wildcards (* and ?) to regex patterns
-                local pattern="$app"
-                # Escape special regex characters except * and ?
-                pattern=$(echo "$pattern" | sed 's/\([[\\.^$()+{}|]\)/\\\1/g')
-                # Now convert wildcards
-                pattern=$(echo "$pattern" | sed 's/\*/\.\*/g; s/\?/\./g')
+        [[ "$transient" == *"window id"* ]] && continue
 
-                # Properly anchor patterns based on wildcard position
-                if [[ "$app" != *"*"* && "$app" != *"?"* ]]; then
-                    # No wildcards - exact match
-                    pattern="^${pattern}$"
-                elif [[ "$app" == *"*" && "$app" != "*"* ]]; then
-                    # Ends with wildcard - anchor start
-                    pattern="^${pattern}"
-                elif [[ "$app" == "*"* && "$app" != *"*" ]]; then
-                    # Starts with wildcard - anchor end
-                    pattern="${pattern}$"
-                fi
-                # If wildcards on both ends or in middle, no anchoring (matches anywhere)
-                
-                # Apply case sensitivity and check both class and title
-                local match=false
-                if [[ "$case_sensitive" == true ]]; then
-                    if echo "$class" | grep -q "$pattern" || echo "$title" | grep -q "$pattern"; then
-                        match=true
-                    fi
-                else
-                    if echo "$class" | grep -qi "$pattern" || echo "$title" | grep -qi "$pattern"; then
-                        match=true
-                    fi
-                fi
-                
-                if [[ "$match" == true ]]; then
-                    should_skip=true
-                    break
-                fi
-            done
-            if [[ "$should_skip" == true ]]; then
-                continue
-            fi
+        # Skip ignored applications (precompiled patterns, zero forks)
+        local title="$net_name"
+        [[ -z "$title" ]] && title="$wm_name"
+        if [[ -n "$IGNORED_APPS" && (-n "$class" || -n "$title") ]]; then
+            matches_ignored_app "$class" "$title" && continue
         fi
-        
+
         # If monitor specified, check if window is on that monitor
         if [[ -n "$monitor_name" ]]; then
             local window_mon=$(get_window_monitor "$id" 2>/dev/null | cut -d: -f1)
             # Skip windows where monitor detection failed (empty result)
             [[ -z "$window_mon" || "$window_mon" != "$monitor_name" ]] && continue
         fi
-        
+
         echo "$id"
     done
 }
@@ -417,36 +372,9 @@ get_visible_windows_by_stacking() {
 
 # trigger_daemon_reapply lives in daemon.sh, which is sourced after this file.
 
-# Initialize window lists for all workspaces and monitors
-initialize_all_workspace_lists() {
-    # Get current monitor info
-    get_screen_info
-    
-    # Get total number of workspaces
-    local total_workspaces=$(wmctrl -d 2>/dev/null | wc -l)
-    if [[ $total_workspaces -eq 0 ]]; then
-        total_workspaces=1
-    fi
-    
-    for ((workspace=0; workspace<total_workspaces; workspace++)); do
-        for monitor in "${MONITORS[@]}"; do
-            IFS=':' read -r monitor_name mx my mw mh <<< "$monitor"
-            
-            
-            # Check if list is empty and needs population
-            local existing_list=$(get_visible_windows "$monitor_name")
-            if [[ -z "$existing_list" ]]; then
-                # Get windows for this workspace/monitor using creation order 
-                local -a windows_for_workspace=()
-                while IFS= read -r id; do
-                    windows_for_workspace+=("$id")
-                done < <(get_visible_windows "$monitor_name")
-                
-            fi
-        done
-    done
-}
-
+# initialize_all_workspace_lists removed: it was a leftover of the removed
+# SSOT window-list persistence (see commits e6dce33..c2031ee) — it queried
+# every workspace/monitor and discarded the results, pure fork burn.
 
 # Debug function to show current window detection
 debug_window_lists() {
