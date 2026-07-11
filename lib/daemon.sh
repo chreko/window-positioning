@@ -364,17 +364,22 @@ watch_daemon_with_ipc() {
                             LAST_KNOWN_WS="$_new_ws"
                         fi
                     fi
-                    # Rate limit: at most one event-driven reconcile per
-                    # second; excess events just mark a pending tick.
-                    if (( EPOCHSECONDS - LAST_EVENT_TICK_TS >= 1 )); then
+                    # Rate limit applies ONLY to _NET_ACTIVE_WINDOW (fires on
+                    # every focus click). _NET_CLIENT_LIST (window open/close)
+                    # and _NET_CURRENT_DESKTOP (workspace switch) are rare,
+                    # meaningful events and always tick immediately — else a
+                    # new window launched right after a click (launcher, menu)
+                    # lands inside the 1s window and waits for the flush.
+                    if [[ "$cmd" == *_NET_ACTIVE_WINDOW* ]] \
+                       && (( EPOCHSECONDS - LAST_EVENT_TICK_TS < 1 )); then
+                        PENDING_EVENT_TICK=1
+                    else
                         # Brief sleep coalesces follow-up property updates
                         # that the WM emits in quick succession.
                         sleep 0.1
                         LAST_EVENT_TICK_TS=$EPOCHSECONDS
                         PENDING_EVENT_TICK=0
                         monitor_tick
-                    else
-                        PENDING_EVENT_TICK=1
                     fi
                     ;;
                 "")
