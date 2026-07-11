@@ -19,10 +19,21 @@ wmctrl -e "0, X, Y, W, H"   →  window's xwininfo "Absolute upper-left"
 …where `(L, T)` are the frame extents from `_NET_FRAME_EXTENTS` (typically
 `L=1, T=24` on the default theme: 1px left border, 24px title bar).
 
+**But only for NorthWest-gravity windows.** The leading `0` in the wmctrl
+geometry argument is the gravity field; `0` means "use the window's own
+`WM_NORMAL_HINTS` win_gravity". GTK apps (xfce4-terminal, thunar) hint
+NorthWest and behave as above. kitty and Qt apps (Qube Manager, most
+qubes-* tools) hint **Static** gravity, for which xfwm4 positions the
+*client* at the request instead — those windows landed exactly one
+title-bar height higher than their GTK neighbors in the same layout
+(user-visible dom0 misalignment bug). All apply paths therefore pass
+gravity **1** (NorthWest) explicitly, which makes every window obey the
+same rule regardless of its toolkit's hint. Never pass gravity `0`.
+
 Practical consequences:
 
 - **To place a window at xwininfo `(X, Y)`** you must call
-  `wmctrl -e "0, X-L, Y-T, W, H"`. Skipping the subtraction shifts every
+  `wmctrl -e "1, X-L, Y-T, W, H"`. Skipping the subtraction shifts every
   apply down by `T` pixels (and right by `L`).
 - **Reading the position back via `wmctrl -lG`** returns `(X+L, Y+T)`, not
   `(X, Y)`. So `wmctrl -lG`'s output is *not* directly suitable as input to
@@ -169,6 +180,7 @@ the same bug.
 | `get_visible_windows` reads all per-window properties via ONE `xprop` call | `lib/windows.sh:get_visible_windows` | Was 4-5 xprop forks per window per call. Add new properties to the existing batched call, not as separate xprop invocations. |
 | `apply_geometry` = layout semantics (`y + DECORATION_HEIGHT`); `apply_geom_adaptive` = absolute frame position | `lib/windows.sh` | Layout math is tuned to the historical landing of standard xfwm4 windows; round-trip callers need exact landing. Mixing them up reintroduces the per-window title-bar drift (user-visible dom0-vs-AppVM misalignment). |
 | Suspend watchdog: main-loop wall-clock gap check restarts the event watcher | `lib/daemon.sh:watch_daemon_with_ipc` | `kill -0` on the watcher subshell cannot detect a stale-but-alive `xprop -spy` after resume; the daemon went deaf until manually restarted. |
+| Every `wmctrl -e` passes gravity `1` (NorthWest), never `0` | `lib/windows.sh:_apply_frame_exact`, `swap_window_geometries`, cycle functions | Gravity `0` defers to the window's own hint; Static-gravity toolkits (kitty, Qt/Qube Manager) then land a title-bar height higher than GTK windows in the same layout. |
 
 ## When in doubt
 

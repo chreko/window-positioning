@@ -73,19 +73,27 @@ get_window_frame_geometry_wmctrl() {
     wmctrl -i -lG | awk -v id="$id" '$1==id{print $3","$4","$5","$6; f=1} END{if(!f) exit 1}'
 }
 
-# Apply one wmctrl request that lands the window's FRAME outer corner exactly
-# at (fx, fy), by subtracting the window's own frame extents — the pattern
-# validated in commit 407b3e4 and docs/DEVELOPMENT.md. Extents are fetched
-# fresh on every call: freshly-mapped windows may not have _NET_FRAME_EXTENTS
-# yet (defaults to 0), and the retry in the callers then re-applies with the
-# real values once the WM has set them.
+# Apply one wmctrl request that lands the window's position (xwininfo space)
+# exactly at (fx, fy), by subtracting the window's own frame extents — the
+# pattern validated in commit 407b3e4 and docs/DEVELOPMENT.md. Extents are
+# fetched fresh on every call: freshly-mapped windows may not have
+# _NET_FRAME_EXTENTS yet (defaults to 0), and the retry in the callers then
+# re-applies with the real values once the WM has set them.
+#
+# The gravity field is EXPLICITLY NorthWest ("1,"), never 0. Gravity 0 means
+# "use the window's own WM_NORMAL_HINTS gravity": GTK apps hint NorthWest
+# (frame is positioned at the request), but kitty and Qt apps (Qube Manager,
+# most qubes-* tools) hint Static (client is positioned at the request) —
+# those landed one title-bar height higher than their neighbors in the same
+# layout. Forcing NorthWest makes every window obey the same rule regardless
+# of what its toolkit asked for.
 _apply_frame_exact() {  # id fx fy w h
     local id="$1" fx="$2" fy="$3" w="$4" h="$5"
     local L R T B
     read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
                        | awk -F' = ' '{print $2}' | sed 's/, / /g')
     : "${L:=0}"; : "${T:=0}"
-    wmctrl -i -r "$id" -e "0,$((fx - L)),$((fy - T)),${w},${h}" 2>/dev/null
+    wmctrl -i -r "$id" -e "1,$((fx - L)),$((fy - T)),${w},${h}" 2>/dev/null
 }
 
 # Place a window's frame at an ABSOLUTE xwininfo position (fx, fy), with
@@ -759,11 +767,12 @@ swap_window_positions() {
 swap_window_geometries() {
     local win1="$1" win2="$2"
 
-    # xfwm4 quirk: `wmctrl -e "0,X,Y,W,H"` lands the window at xwininfo
-    # position (X+L, Y+T). To place a window at xwininfo (X, Y), pass
-    # `wmctrl -e (X-L, Y-T)` — the pattern settled on in commit 407b3e4,
+    # xfwm4 quirk: `wmctrl -e` with NorthWest gravity lands the window at
+    # xwininfo position (X+L, Y+T). To place a window at xwininfo (X, Y),
+    # pass `wmctrl -e (X-L, Y-T)` — the pattern settled on in commit 407b3e4,
     # applied inline here (equivalent to _apply_frame_exact, kept explicit
-    # to preserve that revert's narrative).
+    # to preserve that revert's narrative). Gravity is forced to NorthWest
+    # ("1,") so Static-gravity toolkits (kitty, Qt) obey the same rule.
     local L1 R1 T1 B1 L2 R2 T2 B2
     read -r L1 R1 T1 B1 < <(xprop -id "$win1" _NET_FRAME_EXTENTS 2>/dev/null \
                            | awk -F' = ' '{print $2}' | sed 's/, / /g')
@@ -785,9 +794,9 @@ swap_window_geometries() {
 
     # Subtract per-window frame extents so the result lands at the source's
     # original xwininfo position.
-    wmctrl -i -r "$win1" -e "0,$((x2 - L1)),$((y2 - T1)),$w2,$h2"
+    wmctrl -i -r "$win1" -e "1,$((x2 - L1)),$((y2 - T1)),$w2,$h2"
     wait_window_settled "$win1"
-    wmctrl -i -r "$win2" -e "0,$((x1 - L2)),$((y1 - T2)),$w1,$h1"
+    wmctrl -i -r "$win2" -e "1,$((x1 - L2)),$((y1 - T2)),$w1,$h1"
     wait_window_settled "$win2"
 }
 
@@ -800,9 +809,10 @@ cycle_window_positions() {
     echo "DEBUG: Found ${n} windows to cycle" >&2
     (( n < 2 )) && { echo "DEBUG: Not enough windows to cycle (need at least 2)" >&2; return 0; }
     
-    # Store xwininfo positions (frame outer corner). Each apply below subtracts
-    # the destination window's own (L, T) before calling wmctrl -e — xfwm4's
-    # `wmctrl -e (X, Y)` lands the window at xwininfo (X+L, Y+T).
+    # Store xwininfo positions. Each apply below subtracts the destination
+    # window's own (L, T) and forces NorthWest gravity ("1,") — with NW
+    # gravity xfwm4 lands the window at xwininfo (X+L, Y+T), and forcing it
+    # keeps Static-gravity toolkits (kitty, Qt) on the same rule.
     local geometries=()
     for window in "${windows[@]}"; do
         geometries+=("$(get_window_geometry "$window")")
@@ -818,7 +828,7 @@ cycle_window_positions() {
         read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
                            | awk -F' = ' '{print $2}' | sed 's/, / /g')
         : "${L:=0}"; : "${T:=0}"
-        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
+        wmctrl -i -r "${windows[$i]}" -e "1,$((x - L)),$((y - T)),$w,$h"
         wait_window_settled "${windows[$i]}"
     done
     
@@ -844,9 +854,10 @@ reverse_cycle_window_positions() {
     local n=${#windows[@]}
     (( n < 2 )) && return 0
     
-    # Store xwininfo positions (frame outer corner). Each apply below subtracts
-    # the destination window's own (L, T) before calling wmctrl -e — xfwm4's
-    # `wmctrl -e (X, Y)` lands the window at xwininfo (X+L, Y+T).
+    # Store xwininfo positions. Each apply below subtracts the destination
+    # window's own (L, T) and forces NorthWest gravity ("1,") — with NW
+    # gravity xfwm4 lands the window at xwininfo (X+L, Y+T), and forcing it
+    # keeps Static-gravity toolkits (kitty, Qt) on the same rule.
     local geometries=()
     for window in "${windows[@]}"; do
         geometries+=("$(get_window_geometry "$window")")
@@ -862,7 +873,7 @@ reverse_cycle_window_positions() {
         read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
                            | awk -F' = ' '{print $2}' | sed 's/, / /g')
         : "${L:=0}"; : "${T:=0}"
-        wmctrl -i -r "${windows[$i]}" -e "0,$((x - L)),$((y - T)),$w,$h"
+        wmctrl -i -r "${windows[$i]}" -e "1,$((x - L)),$((y - T)),$w,$h"
         wait_window_settled "${windows[$i]}"
     done
     
