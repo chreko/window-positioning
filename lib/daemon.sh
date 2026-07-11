@@ -233,9 +233,14 @@ disable_daemon_auto_layout() {
 # Atoms watched:
 #   _NET_CLIENT_LIST       window create / destroy
 #   _NET_CURRENT_DESKTOP   workspace switch
+#   _NET_ACTIVE_WINDOW     focus change — the proxy that makes minimize/
+#                          restore event-driven (minimizing moves focus).
+#                          Fires on every click, so event-driven ticks are
+#                          rate-limited to one per second in the main loop
+#                          (pending ticks flush within ~1s, heartbeat is the
+#                          final backstop).
 # Stacking changes (_NET_CLIENT_LIST_STACKING) intentionally skipped — they
-# fire on every focus click and produce too much churn; the 30s safety-net
-# tick catches minimize/restore.
+# fire on the same interactions as _NET_ACTIVE_WINDOW without adding signal.
 start_event_watcher() {
     [[ -n "$WATCHER_PID" ]] && kill -0 "$WATCHER_PID" 2>/dev/null && return 0
 
@@ -244,7 +249,7 @@ start_event_watcher() {
         # $$ inside a subshell is still the parent's PID — use $BASHPID for our own.
         trap 'pkill -P "$BASHPID" 2>/dev/null; exit 0' SIGTERM SIGINT
         while true; do
-            xprop -spy -root _NET_CLIENT_LIST _NET_CURRENT_DESKTOP 2>/dev/null \
+            xprop -spy -root _NET_CLIENT_LIST _NET_CURRENT_DESKTOP _NET_ACTIVE_WINDOW 2>/dev/null \
               | awk -v tag="$EVENT_TAG" '{ printf "%s %s\n", tag, $0; fflush() }' \
               > "$DAEMON_CMD_PIPE"
             # xprop died (X server gone, atom missing, etc) — back off then retry
@@ -324,6 +329,13 @@ watch_daemon_with_ipc() {
     # unconditionally, drop caches, and force a full reconcile.
     local LAST_LOOP_TS
     LAST_LOOP_TS=$(date +%s)
+    # Event-tick rate limit: _NET_ACTIVE_WINDOW fires on every focus click,
+    # so cap event-driven reconciles at one per second. A rate-limited event
+    # sets PENDING_EVENT_TICK instead of being dropped; the read timeout
+    # shrinks to 1s while a tick is pending, so the trailing edge of a
+    # click-storm is reconciled within ~1s of the last event. Costs nothing
+    # at idle — no events, no wakeups, the read just waits SAFETY_TICK.
+    local LAST_EVENT_TICK_TS=0 PENDING_EVENT_TICK=0
     while true; do
         local _now_ts
         _now_ts=$(date +%s)
@@ -339,13 +351,11 @@ watch_daemon_with_ipc() {
         fi
         LAST_LOOP_TS=$_now_ts
 
-        local cmd
-        if read -t "$SAFETY_TICK" -r cmd <&3; then
+        local cmd _read_timeout="$SAFETY_TICK"
+        (( PENDING_EVENT_TICK )) && _read_timeout=1
+        if read -t "$_read_timeout" -r cmd <&3; then
             case "$cmd" in
                 "$EVENT_TAG"\ *)
-                    # X11 event from xprop -spy. Brief sleep coalesces follow-up
-                    # property updates that the WM emits in quick succession.
-                    sleep 0.1
                     if [[ "$cmd" == *"_NET_CURRENT_DESKTOP"* ]]; then
                         local _new_ws
                         _new_ws=$(get_current_workspace 2>/dev/null || echo "?")
@@ -354,7 +364,18 @@ watch_daemon_with_ipc() {
                             LAST_KNOWN_WS="$_new_ws"
                         fi
                     fi
-                    monitor_tick
+                    # Rate limit: at most one event-driven reconcile per
+                    # second; excess events just mark a pending tick.
+                    if (( EPOCHSECONDS - LAST_EVENT_TICK_TS >= 1 )); then
+                        # Brief sleep coalesces follow-up property updates
+                        # that the WM emits in quick succession.
+                        sleep 0.1
+                        LAST_EVENT_TICK_TS=$EPOCHSECONDS
+                        PENDING_EVENT_TICK=0
+                        monitor_tick
+                    else
+                        PENDING_EVENT_TICK=1
+                    fi
                     ;;
                 "")
                     # Empty line — ignore.
@@ -376,14 +397,17 @@ watch_daemon_with_ipc() {
             continue
         fi
 
-        # Safety-net heartbeat: catches state changes the watched atoms miss
-        # (e.g. minimize/restore via _NET_WM_STATE on individual windows).
-        # Also respawns the watcher if it died silently.
+        # Read timed out. Either a rate-limited event tick is pending (1s
+        # timeout — flush it now) or this is the SAFETY_TICK heartbeat that
+        # catches anything the watched atoms miss. Also respawns the watcher
+        # if it died silently.
         if [[ -n "$WATCHER_PID" ]] && ! kill -0 "$WATCHER_PID" 2>/dev/null; then
             echo "$(date): Event watcher died; respawning"
             WATCHER_PID=""
             start_event_watcher
         fi
+        LAST_EVENT_TICK_TS=$EPOCHSECONDS
+        PENDING_EVENT_TICK=0
         monitor_tick
     done
 }

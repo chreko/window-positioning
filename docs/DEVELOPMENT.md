@@ -181,6 +181,7 @@ the same bug.
 | `apply_geometry` = layout semantics (`y + DECORATION_HEIGHT`); `apply_geom_adaptive` = absolute frame position | `lib/windows.sh` | Layout math is tuned to the historical landing of standard xfwm4 windows; round-trip callers need exact landing. Mixing them up reintroduces the per-window title-bar drift (user-visible dom0-vs-AppVM misalignment). |
 | Suspend watchdog: main-loop wall-clock gap check restarts the event watcher | `lib/daemon.sh:watch_daemon_with_ipc` | `kill -0` on the watcher subshell cannot detect a stale-but-alive `xprop -spy` after resume; the daemon went deaf until manually restarted. |
 | Every `wmctrl -e` passes gravity `1` (NorthWest), never `0` | `lib/windows.sh:_apply_frame_exact`, `swap_window_geometries`, cycle functions | Gravity `0` defers to the window's own hint; Static-gravity toolkits (kitty, Qt/Qube Manager) then land a title-bar height higher than GTK windows in the same layout. |
+| Event-driven ticks are rate-limited to 1/s via `PENDING_EVENT_TICK` (never silently dropped — pending ticks flush on a 1s read timeout) | `lib/daemon.sh:watch_daemon_with_ipc` | `_NET_ACTIVE_WINDOW` (watched to make minimize/restore event-driven) fires on every focus click; unlimited ticks would reintroduce the click-storm churn that got stacking events excluded (commit `a0286af`). Dropping instead of deferring would delay the trailing event up to 30s. |
 
 ## When in doubt
 
