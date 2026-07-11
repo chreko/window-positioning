@@ -409,6 +409,7 @@ case "${1:-}" in
                 echo "  Panel height: ${PANEL_HEIGHT}px"
                 echo "  Panel auto-hide: ${PANEL_AUTOHIDE}"
                 echo "  Decoration height: ${DECORATION_HEIGHT}px"
+                echo "  Decoration bottom: ${DECORATION_BOTTOM}px"
                 echo "  Decoration width: ${DECORATION_WIDTH}px"
                 echo "  Min width: ${MIN_WIDTH}px"
                 echo "  Min height: ${MIN_HEIGHT}px"

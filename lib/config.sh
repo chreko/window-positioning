@@ -50,7 +50,13 @@ AUTO_LAYOUT_5="grid-wide-bottom"
 # Height: title bar height - set to 0 if windows don't have title bars
 DECORATION_HEIGHT=24
 
-# Width: side border width (left + right combined) - usually 0 for modern themes  
+# Bottom frame border height (the B in _NET_FRAME_EXTENTS "L, R, T, B").
+# Check with: xprop -id $(xdotool getactivewindow) _NET_FRAME_EXTENTS
+# Without it every window is B px too tall: bottom and inter-row gaps
+# come out B px smaller than the top gap.
+DECORATION_BOTTOM=5
+
+# Width: side border width (left + right combined) - usually 0 for modern themes
 DECORATION_WIDTH=0
 
 # Window ordering strategy
@@ -110,9 +116,16 @@ load_config() {
     MIN_WIDTH=${MIN_WIDTH:-400}
     MIN_HEIGHT=${MIN_HEIGHT:-300}
     
-    # Window decoration dimensions - configurable via settings
-    DECORATION_HEIGHT=${DECORATION_HEIGHT:-30}
-    DECORATION_WIDTH=${DECORATION_WIDTH:-2}
+    # Window decoration dimensions - configurable via settings.
+    # DECORATION_HEIGHT is the title bar (T in _NET_FRAME_EXTENTS);
+    # DECORATION_BOTTOM is the bottom border (B). Positioning uses T alone
+    # (the client sits T below the frame top); vertical size budgeting uses
+    # T+B (what a window's frame consumes beyond its client height) — see
+    # init_layout_vars in lib/layouts.sh. Defaults match the xfwm4 default
+    # theme (extents 1,1,24,5).
+    DECORATION_HEIGHT=${DECORATION_HEIGHT:-24}
+    DECORATION_BOTTOM=${DECORATION_BOTTOM:-5}
+    DECORATION_WIDTH=${DECORATION_WIDTH:-0}
     
     # Window ordering strategy
     WINDOW_ORDER_STRATEGY=${WINDOW_ORDER_STRATEGY:-position}

@@ -24,7 +24,13 @@ init_layout_vars() {
     IFS=':' read -r usable_x usable_y usable_w usable_h <<< "$layout_area"
 
     gap=$GAP
-    decoration_h=$DECORATION_HEIGHT
+    # Vertical decoration BUDGET: what a window's frame consumes beyond its
+    # client height = title bar (T) + bottom border (B). Positioning uses T
+    # alone (apply_geometry lands the client T below the target); budgeting
+    # with T only made every window B px too tall, so the bottom gap and
+    # every inter-row gap came out B px smaller than the top gap
+    # (user-visible "more space above windows than below").
+    decoration_h=$((DECORATION_HEIGHT + DECORATION_BOTTOM))
     decoration_w=$DECORATION_WIDTH
     final_x=$((usable_x + gap))
     final_y=$((usable_y + gap))

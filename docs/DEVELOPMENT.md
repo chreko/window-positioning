@@ -38,9 +38,28 @@ Practical consequences:
 - **Reading the position back via `wmctrl -lG`** returns `(X+L, Y+T)`, not
   `(X, Y)`. So `wmctrl -lG`'s output is *not* directly suitable as input to
   `wmctrl -e`. Round-tripping needs the same `(L, T)` correction.
-- **`xwininfo`'s "Absolute upper-left"** is the frame outer corner — that
-  is the user-visible upper-left, and the value the layout code thinks of
-  as "the position of the window."
+- **`xwininfo`'s "Absolute upper-left"** is the CLIENT origin, not the
+  frame corner (verified empirically 2026-07-11: `wmctrl -e "1,9,1450"`
+  → xwininfo reports `(10, 1474)` with extents `1,1,24,5` — i.e. frame
+  at the request, client at request + `(L, T)`). The user-visible frame
+  corner is xwininfo minus `(L, T)`.
+
+## Vertical decoration budget: T for position, T+B for size
+
+`_NET_FRAME_EXTENTS` is `L, R, T, B`. Two different decoration values are
+needed and must not be conflated:
+
+- **Positioning** uses `T` alone: the client sits `T` below the frame top.
+  `apply_geometry` adds `DECORATION_HEIGHT` (= `T`) to its y target.
+- **Height budgeting** uses `T + B`: a window's frame consumes
+  `client_height + T + B` of vertical space. `init_layout_vars` sets
+  `decoration_h = DECORATION_HEIGHT + DECORATION_BOTTOM` for all layout
+  math (`final_h`, `gap_vertical`, grid strips, corner budgets).
+
+Budgeting with `T` only made every window `B` px (5 on the default theme)
+too tall: the top gap was exactly `GAP` but the bottom gap and every
+inter-row gap came out `GAP - B` — user-visible as "more space above the
+windows than below."
 
 ## The two apply functions and their coordinate semantics
 
@@ -181,6 +200,7 @@ the same bug.
 | `apply_geometry` = layout semantics (`y + DECORATION_HEIGHT`); `apply_geom_adaptive` = absolute frame position | `lib/windows.sh` | Layout math is tuned to the historical landing of standard xfwm4 windows; round-trip callers need exact landing. Mixing them up reintroduces the per-window title-bar drift (user-visible dom0-vs-AppVM misalignment). |
 | Suspend watchdog: main-loop wall-clock gap check restarts the event watcher | `lib/daemon.sh:watch_daemon_with_ipc` | `kill -0` on the watcher subshell cannot detect a stale-but-alive `xprop -spy` after resume; the daemon went deaf until manually restarted. |
 | Every `wmctrl -e` passes gravity `1` (NorthWest), never `0` | `lib/windows.sh:_apply_frame_exact`, `swap_window_geometries`, cycle functions | Gravity `0` defers to the window's own hint; Static-gravity toolkits (kitty, Qt/Qube Manager) then land a title-bar height higher than GTK windows in the same layout. |
+| Position math uses `DECORATION_HEIGHT` (T); size math uses `DECORATION_HEIGHT + DECORATION_BOTTOM` (T+B) | `lib/windows.sh:apply_geometry` vs `lib/layouts.sh:init_layout_vars`, `lib/interactive.sh:apply_preset` | Conflating the two shifts windows (position with T+B) or squeezes bottom/inter-row gaps by B (size with T only). |
 | Only `_NET_ACTIVE_WINDOW` ticks are rate-limited (1/s via `PENDING_EVENT_TICK`, never silently dropped — pending ticks flush on a 1s read timeout); `_NET_CLIENT_LIST` and `_NET_CURRENT_DESKTOP` always tick immediately | `lib/daemon.sh:watch_daemon_with_ipc` | `_NET_ACTIVE_WINDOW` (watched to make minimize/restore event-driven) fires on every focus click; unlimited ticks would reintroduce the click-storm churn that got stacking events excluded (commit `a0286af`). Dropping instead of deferring would delay the trailing event up to 30s. Rate-limiting ALL events made a new window launched right after a click wait ~1s to tile (user-reported). |
 
 ## When in doubt

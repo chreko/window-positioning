@@ -16,7 +16,8 @@ apply_preset() {
     local half_h=$((usable_h / 2))
     
     local gap=$GAP
-    local decoration_h=$DECORATION_HEIGHT
+    # T+B budget, same reasoning as init_layout_vars in lib/layouts.sh
+    local decoration_h=$((DECORATION_HEIGHT + DECORATION_BOTTOM))
     local decoration_w=$DECORATION_WIDTH
     
     case "$preset" in
