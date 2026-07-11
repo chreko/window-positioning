@@ -180,8 +180,16 @@ apply_meta_grid_single_monitor() {
     # integer-division remainder so the right and bottom edges align with
     # the usable area. Columns use raw gap; rows use gap_vertical because
     # row separators must clear the lower row's title bar.
-    local strip_w=$((usable_w - gap * 2))
-    local strip_h=$((usable_h - gap * 2))
+    #
+    # Like final_w/final_h in init_layout_vars, the strips subtract the
+    # decoration once: window heights are CLIENT heights, so the first
+    # row's title bar (and side borders) must come out of the strip or
+    # the bottom row overflows the usable area by one decoration height.
+    # The original modular grid (efeec97) had this term; the faf2fd7
+    # consolidation dropped it — 4-window auto layouts then tiled as if
+    # the monitor extended one title-bar height below its real bottom.
+    local strip_w=$((usable_w - gap * 2 - decoration_w))
+    local strip_h=$((usable_h - gap * 2 - decoration_h))
     local cell_widths=() cell_heights=()
     split_strip "$strip_w" "$cols" "$gap" cell_widths
     split_strip "$strip_h" "$rows" "$gap_vertical" cell_heights
