@@ -31,51 +31,55 @@ Practical consequences:
   is the user-visible upper-left, and the value the layout code thinks of
   as "the position of the window."
 
-## What `apply_geom_adaptive` does, and where it falls short
+## The two apply functions and their coordinate semantics
 
-`lib/windows.sh:apply_geom_adaptive` is meant to abstract over WM-specific
-coordinate mode differences. It probes once per process via
-`detect_wmctrl_coord_mode` and caches "frame" (pass through) or "client"
-(add `(L, T)` to convert frame→client).
+All geometry applies now go through `_apply_frame_exact` (`lib/windows.sh`),
+which fetches the window's own `_NET_FRAME_EXTENTS` fresh on every call and
+passes `wmctrl -e (X-L, Y-T)` — the pattern validated in commit `407b3e4`.
+Every window's frame therefore lands where the caller said, regardless of
+that window's decorations. Two public wrappers exist with **different
+coordinate semantics**; picking the wrong one reintroduces per-window drift:
 
-The probe applies the window's *current* position back via `wmctrl -e`. If
-the window doesn't move, the probe concludes "frame" mode. xfwm4 will
-accept a no-op without moving, so the probe always concludes "frame" on
-xfwm4 — but the actual behavior on a *real* (non-zero-delta) move is
-neither "frame" nor "client": you have to *subtract* `(L, T)`, not pass
-through and not add.
+- **`apply_geometry` (LAYOUT semantics)** — lands the frame at
+  `(x, y + DECORATION_HEIGHT)`. All layout math in `lib/layouts.sh` and
+  `lib/interactive.sh` was tuned in the era when `apply_geometry` passed
+  coordinates raw and xfwm4 shifted standard windows down by `T` (the
+  title bar, = `DECORATION_HEIGHT`). Normalizing to `DECORATION_HEIGHT`
+  keeps every standard window exactly where it always was — no layout
+  re-tune — while windows with *non-standard* extents (client-side-decorated
+  dom0 apps, GTK CSD, vs xfwm4-decorated AppVM windows on Qubes) now land
+  aligned with their neighbors instead of a title-bar height higher. That
+  misalignment was a real user-reported bug; it existed because the old raw
+  `wmctrl -e` call let each window's OWN `(L, T)` decide its landing.
 
-This means **`apply_geom_adaptive` is unsafe for one-off geometry applies
-on xfwm4**. It happens to work for layout meta-functions in `lib/layouts.sh`
-because those use the wrapper `apply_geometry` (which is also a raw
-`wmctrl -e` call) and the layout math has been hand-tuned to compensate.
-But functions like `swap_window_geometries` and `cycle_window_positions`
-that compute a target xwininfo position and apply it directly need to
-subtract `(L, T)` per-window themselves and use raw `wmctrl -e`.
+- **`apply_geom_adaptive` (ABSOLUTE semantics)** — lands the frame exactly
+  at `(fx, fy)`. Use for round-trip applies: coordinates that were read back
+  from X (saved presets via `save_position`/`load_position`,
+  `simultaneous_resize`) and must land exactly where they were read.
+  The name is kept for call-site continuity; the former
+  `detect_wmctrl_coord_mode` probe it wrapped is **gone** — the probe's
+  no-op apply could never classify xfwm4 (nothing moves on a no-op, so it
+  always said "frame"/pass-through, which is wrong on any real move) and
+  its "client" branch was unreachable. Don't resurrect it; if a non-xfwm4
+  WM ever matters, write a probe that performs a *non-zero-delta* move and
+  observes whether the result lands at `+(L,T)`, `0`, or `-(L,T)`.
 
-If/when this codebase needs to run on a non-xfwm4 WM where the
-"add `(L, T)`" interpretation is correct (i.e. real "client" mode), the
-right fix is a more honest probe — apply a *non-zero-delta* move during
-detection, observe whether the result moved by `+(L, T)`, `0`, or
-`-(L, T)`, and pick a three-way mode. Until then, the safe pattern for
-new direct-apply code is:
+`swap_window_geometries`, `cycle_window_positions`, and
+`reverse_cycle_window_positions` keep their inline manual `(L, T)`
+subtraction from `407b3e4` (equivalent to `_apply_frame_exact`, kept
+explicit to preserve that revert's narrative).
 
-```bash
-local L R T B
-read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
-                   | awk -F' = ' '{print $2}' | sed 's/, / /g')
-: "${L:=0}"; : "${T:=0}"
-wmctrl -i -r "$id" -e "0,$((target_x - L)),$((target_y - T)),$w,$h"
-wait_window_settled "$id"
-```
+## Self-correcting applies
 
-## Self-correcting applies: `apply_geometry` and `apply_geom_adaptive` (frame branch)
-
-`apply_geometry` and the frame branch of `apply_geom_adaptive` verify the
-result after `wait_window_settled` and re-apply once if drift exceeds a 2 px
-epsilon on any axis. The helper `_geom_drift_exceeds` reads back via
+`apply_geometry` and `apply_geom_adaptive` verify the result after
+`wait_window_settled` and re-apply once if drift exceeds a 2 px epsilon on
+any axis. `_geom_drift_exceeds` reads back via
 `get_window_frame_geometry_wmctrl` (xwininfo space) and compares against the
-target shifted by `(L, T)` — see the helper for the round-trip arithmetic.
+**absolute frame target** — since applies subtract per-window extents, the
+expected readback is the target itself, with no `(L, T)` shift. A useful
+side effect: a first apply that ran while `_NET_FRAME_EXTENTS` was still
+unset (freshly mapped window, extents default to 0) shows up as drift and
+the retry corrects it with the by-then-real extents.
 
 This eliminates the visible 1-2 s reflow snap that the daemon's SIGUSR1-driven
 second pass produced previously: the second pass now happens inline, only
@@ -89,17 +93,19 @@ Cap: exactly **one** retry. Toolkits with `WM_NORMAL_HINTS` size increments
 px; we accept that floor after the single retry. Same convergence floor as the
 daemon's reapply produced previously.
 
-The client branch of `apply_geom_adaptive` is intentionally **not** wrapped:
-`detect_wmctrl_coord_mode` always concludes "frame" on xfwm4 (its no-op probe
-can't distinguish), so the client branch is dead today, and the existing probe
-is documented broken — adding verify-retry there would falsely double the
-`(L, T)` shift in the comparison.
+## Suspend/resume watchdog
 
-`swap_window_geometries`, `cycle_window_positions`, and
-`reverse_cycle_window_positions` are also **not** self-correcting. They use the
-"raw `wmctrl -e` with manual `(L, T)` subtraction" pattern documented above,
-settled on after the revert in commit `407b3e4`. Wrapping them is a possible
-follow-up but would muddy that revert's narrative.
+After a suspend/resume cycle the `xprop -spy` event watcher can hold a stale
+X connection that neither delivers events nor exits. Its wrapper subshell
+stays alive, so the heartbeat's `kill -0` respawn check passes and the daemon
+goes permanently deaf — running but never re-tiling. The main loop in
+`watch_daemon_with_ipc` therefore tracks wall-clock time per iteration; a
+gap larger than `2 × SAFETY_TICK + 5` seconds can only mean the machine was
+suspended (an iteration is otherwise bounded by the read timeout plus
+processing). On detection it unconditionally restarts the event watcher,
+drops the monitor cache, clears `WINDOW_COUNT` (forcing every
+`(workspace, monitor)` dirty so the next reconcile reapplies), and clears
+stale holds/cooldowns from before the suspend.
 
 ## Daemon IPC: why diagnostic logs use `>&6`
 
@@ -159,11 +165,16 @@ the same bug.
 | Auto-start is XDG, not a systemd user unit | `~/.config/autostart/window-positioning.desktop` | XDG starts more reliably for X11 sessions; the systemd path was tried and removed. |
 | `IGNORED_APPS` is split via `read -ra`, not unquoted `arr=($var)` | `lib/windows.sh:get_visible_windows`, `lib/config.sh:validate_ignored_apps` | Unquoted glob expansion against the daemon's CWD silently dropped patterns whose name matched a real file (commit `c1fda77`). |
 | `clear_workspace_monitor_layout`, the four `reapply_saved_layout_for_monitor` branches, and `_NET_CURRENT_DESKTOP` transitions all log to fd 6 | `lib/daemon.sh`, `lib/config.sh`, `lib/layouts.sh` | Required to diagnose the open `master vertical 75` regression — see TODO.md (commit `5680872`). |
+| `IGNORED_APPS` patterns are compiled ONCE in `compile_ignored_patterns` and matched with bash `[[ =~ ]]` | `lib/config.sh`, `lib/windows.sh:get_visible_windows` | The old per-window inline compiler forked ~5 processes per pattern per window per call — the largest CPU cost on the daemon's hot path. Don't move compilation back into the window loop. |
+| `get_visible_windows` reads all per-window properties via ONE `xprop` call | `lib/windows.sh:get_visible_windows` | Was 4-5 xprop forks per window per call. Add new properties to the existing batched call, not as separate xprop invocations. |
+| `apply_geometry` = layout semantics (`y + DECORATION_HEIGHT`); `apply_geom_adaptive` = absolute frame position | `lib/windows.sh` | Layout math is tuned to the historical landing of standard xfwm4 windows; round-trip callers need exact landing. Mixing them up reintroduces the per-window title-bar drift (user-visible dom0-vs-AppVM misalignment). |
+| Suspend watchdog: main-loop wall-clock gap check restarts the event watcher | `lib/daemon.sh:watch_daemon_with_ipc` | `kill -0` on the watcher subshell cannot detect a stale-but-alive `xprop -spy` after resume; the daemon went deaf until manually restarted. |
 
 ## When in doubt
 
-- For one-off geometry: read xwininfo, fetch frame extents, subtract
-  `(L, T)`, call `wmctrl -e` directly, then `wait_window_settled`.
+- For one-off geometry at an absolute xwininfo position: use
+  `apply_geom_adaptive` (subtracts frame extents, settles, retries on
+  drift). For layout-space coordinates: use `apply_geometry`.
 - For batch layout (master, grid, columns): use the existing meta-layout
   helpers in `lib/layouts.sh`. Their gap math already accounts for the
   xfwm4 quirk via `apply_geometry`.

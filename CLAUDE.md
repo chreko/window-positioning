@@ -282,7 +282,7 @@ The tool integrates with XFCE's keyboard shortcut system. Suggested shortcuts ar
 - **Configuration Driven**: Behavior customizable via config files
 - **Error Handling**: Graceful degradation when tools unavailable
 - **Maintainability**: 87% reduction in main script size for easier maintenance
-- **xfwm4 wmctrl quirk**: `wmctrl -e "0,X,Y,W,H"` lands the window at xwininfo `(X+L, Y+T)`, not `(X, Y)`. For one-off geometry applies (swap, cycle, manual placement) read xwininfo, fetch frame extents, subtract `(L, T)`, and call `wmctrl` directly — `apply_geom_adaptive`'s no-op coord-mode probe misclassifies xfwm4 and produces drift on real moves. See `docs/DEVELOPMENT.md` for the deeper writeup.
+- **xfwm4 wmctrl quirk**: raw `wmctrl -e "0,X,Y,W,H"` lands the window at xwininfo `(X+L, Y+T)`, not `(X, Y)`, using each window's OWN frame extents. All applies now subtract per-window extents via `_apply_frame_exact`. Two wrappers with different coordinate semantics: `apply_geometry` (layout space — frame lands at `y + DECORATION_HEIGHT`, preserves the hand-tuned layout math) and `apply_geom_adaptive` (absolute xwininfo position — for coordinates read back from X, e.g. presets and simultaneous resize). Mixing them up reintroduces per-window title-bar drift. See `docs/DEVELOPMENT.md` for the deeper writeup.
 
 ### Security Notes
 - **Local Only**: No network operations or external dependencies
