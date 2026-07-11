@@ -314,7 +314,31 @@ watch_daemon_with_ipc() {
     LAST_KNOWN_WS=$(get_current_workspace 2>/dev/null || echo "?")
 
     echo "$(date): entering main loop (heartbeat ${SAFETY_TICK}s)"
+    # Suspend/resume detection: a loop iteration normally takes at most
+    # SAFETY_TICK seconds (read timeout) plus a few seconds of processing.
+    # A much larger wall-clock gap means the machine was suspended. After
+    # resume the xprop -spy watcher can hold a stale X connection that
+    # neither delivers events nor exits — its wrapper subshell stays alive,
+    # so the heartbeat's kill -0 respawn check never fires and the daemon
+    # goes permanently deaf. Detect the gap, restart the watcher
+    # unconditionally, drop caches, and force a full reconcile.
+    local LAST_LOOP_TS
+    LAST_LOOP_TS=$(date +%s)
     while true; do
+        local _now_ts
+        _now_ts=$(date +%s)
+        if (( _now_ts - LAST_LOOP_TS > SAFETY_TICK * 2 + 5 )); then
+            echo "$(date): wall-clock gap of $((_now_ts - LAST_LOOP_TS))s detected — assuming suspend/resume; restarting event watcher"
+            stop_event_watcher
+            start_event_watcher
+            SCREEN_INFO_CACHE_TIME=0            # monitors may have changed
+            WINDOW_COUNT=()                     # force dirty on next reconcile
+            HOLD_UNTIL_MS=()                    # stale holds from before suspend
+            COOLDOWN_UNTIL_MS=0
+            monitor_tick
+        fi
+        LAST_LOOP_TS=$_now_ts
+
         local cmd
         if read -t "$SAFETY_TICK" -r cmd <&3; then
             case "$cmd" in
