@@ -3,6 +3,12 @@
 # set -e is intentionally omitted: the daemon runs many fallible probes
 # (grep -c on possibly-empty input, optional xprop reads) where a non-zero
 # exit is the normal "no data" path and must not terminate the loop.
+# CAUTION: omitting -e here is NOT sufficient on its own — this file is
+# sourced by place-window, which runs `set -euo pipefail`, and `set -uo
+# pipefail` does not clear an inherited -e. watch_daemon_with_ipc runs an
+# explicit `set +e` at daemon entry; keep it, or the daemon silently dies
+# on the first BadWindow race (see commit 886c867 and the July 2026
+# crash investigation).
 set -uo pipefail
 
 # Watch daemon functionality for place-window
@@ -30,9 +36,11 @@ source "$DAEMON_DIR/monitors.sh"
 source "$DAEMON_DIR/windows.sh"
 source "$DAEMON_DIR/layouts.sh"
 
-# --- Daemon-specific state tracking (SSOT is in windows.sh) ---
-# Dirty and generation tracking for daemon's reconciliation logic
-declare -Ag WINDOW_DIRTY WINDOW_GEN WINDOW_COUNT 2>/dev/null || true
+# --- Daemon-specific state tracking ---
+# Dirty tracking for daemon's reconciliation logic.
+# WINDOW_IDS holds the last-seen membership (sorted, space-joined window IDs)
+# per (workspace, monitor); WINDOW_COUNT is kept alongside for log messages.
+declare -Ag WINDOW_DIRTY WINDOW_COUNT WINDOW_IDS 2>/dev/null || true
 
 # Hold map to protect manual operations from immediate reconciliation
 declare -Ag HOLD_UNTIL_MS 2>/dev/null || true
@@ -51,6 +59,23 @@ WATCHER_PID=""
 EVENT_TAG="__EVENT__"
 SAFETY_TICK=30  # heartbeat seconds — events do most of the work
 
+# Root atoms the watcher spies on — see start_event_watcher for the rationale
+# per atom. Kept as a variable so tests can assert coverage.
+WATCHED_ROOT_ATOMS="_NET_CLIENT_LIST _NET_CLIENT_LIST_STACKING _NET_CURRENT_DESKTOP _NET_ACTIVE_WINDOW"
+
+# Classify an event line for the main loop's tick rate limit. Atoms that fire
+# on every click/raise (_NET_ACTIVE_WINDOW, _NET_CLIENT_LIST_STACKING) are
+# rate-limited to one tick per second; rare, meaningful events (window
+# open/close, workspace switch) always tick immediately. NB:
+# _NET_CLIENT_LIST is a prefix of _NET_CLIENT_LIST_STACKING — the STACKING
+# pattern must be tested so a plain client-list event is never misclassified.
+event_is_rate_limited() {  # arg: raw tagged event line
+    case "$1" in
+        *_NET_ACTIVE_WINDOW*|*_NET_CLIENT_LIST_STACKING*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 hold_now() {  # ws mon_name [ms]
   local ws="$1" mon="$2" ms="${3:-900}"
   local now; now=$(date +%s%3N)
@@ -64,10 +89,6 @@ should_hold() {  # ws mon_name
   k="workspace_${ws}_monitor_${mon}"
   [[ ${HOLD_UNTIL_MS["$k"]-0} -gt $now ]]
 }
-
-# Locks are no-ops in single-process mode; harmless if you later add flock
-state_lock()   { :; }
-state_unlock() { :; }
 
 # Key helper matching windows.sh format for daemon maps
 key_wsmon() {  # args: workspace monitor_name
@@ -84,13 +105,6 @@ monitor_should_apply() {
   local now; now=$(date +%s%3N)
   (( now >= COOLDOWN_UNTIL_MS ))
 }
-
-# Geometry helper functions for stateless cycle operations
-# get_window_geometry() moved to windows.sh (comma-separated format) to avoid duplication
-
-# Window functions moved to windows.sh
-
-# get_visible_windows_by_creation_for_workspace() moved to windows.sh to avoid duplication
 
 # Cached screen info for CPU optimization - monitors rarely change
 get_screen_info_cached() {
@@ -165,25 +179,6 @@ disable_auto_layout() {
     echo "$(date): Auto-layout disabled"
 }
 
-# Toggle auto-layout state
-toggle_auto_layout() {
-    if is_auto_layout_enabled; then
-        disable_auto_layout
-        echo "Auto-layout disabled - daemon enters idle mode for maximum CPU savings"
-        echo "All window monitoring and processing paused until re-enabled"
-    else
-        enable_auto_layout
-        echo "Auto-layout enabled - daemon will automatically apply layouts on window changes"
-        echo "Window monitoring and layout processing resumed"
-    fi
-
-    # Send SIGUSR2 to daemon to wake it from idle sleep
-    local daemon_pid=$(get_daemon_pid)
-    if [[ -n "$daemon_pid" ]]; then
-        kill -USR2 "$daemon_pid" 2>/dev/null || true
-    fi
-}
-
 # Enable auto-layout directly (daemon must be running)
 enable_daemon_auto_layout() {
     if ! is_daemon_running; then
@@ -230,17 +225,24 @@ disable_daemon_auto_layout() {
 # tagged and pushed into the IPC pipe so the main loop can multiplex events
 # and commands through a single read.
 #
-# Atoms watched:
-#   _NET_CLIENT_LIST       window create / destroy
-#   _NET_CURRENT_DESKTOP   workspace switch
-#   _NET_ACTIVE_WINDOW     focus change — the proxy that makes minimize/
-#                          restore event-driven (minimizing moves focus).
-#                          Fires on every click, so event-driven ticks are
-#                          rate-limited to one per second in the main loop
-#                          (pending ticks flush within ~1s, heartbeat is the
-#                          final backstop).
-# Stacking changes (_NET_CLIENT_LIST_STACKING) intentionally skipped — they
-# fire on the same interactions as _NET_ACTIVE_WINDOW without adding signal.
+# Atoms watched (WATCHED_ROOT_ATOMS):
+#   _NET_CLIENT_LIST           window create / destroy
+#   _NET_CURRENT_DESKTOP       workspace switch
+#   _NET_ACTIVE_WINDOW         focus change — the proxy that makes minimize/
+#                              restore event-driven (minimizing moves focus).
+#                              Fires on every click, so it is rate-limited to
+#                              one tick per second in the main loop (pending
+#                              ticks flush within ~1s, heartbeat is the final
+#                              backstop).
+#   _NET_CLIENT_LIST_STACKING  restack — the ONLY root atom that fires when a
+#                              window is moved to another workspace without a
+#                              focus change (pager drag, wmctrl/script move):
+#                              _NET_WM_DESKTOP is a per-window property the
+#                              root spy cannot see, but xfwm4 restacks the
+#                              window into the destination workspace. Mostly
+#                              fires on the same clicks as _NET_ACTIVE_WINDOW,
+#                              so it shares the same 1s rate limit
+#                              (event_is_rate_limited) and adds no idle cost.
 start_event_watcher() {
     [[ -n "$WATCHER_PID" ]] && kill -0 "$WATCHER_PID" 2>/dev/null && return 0
 
@@ -249,7 +251,8 @@ start_event_watcher() {
         # $$ inside a subshell is still the parent's PID — use $BASHPID for our own.
         trap 'pkill -P "$BASHPID" 2>/dev/null; exit 0' SIGTERM SIGINT
         while true; do
-            xprop -spy -root _NET_CLIENT_LIST _NET_CURRENT_DESKTOP _NET_ACTIVE_WINDOW 2>/dev/null \
+            # shellcheck disable=SC2086 — atom list must word-split
+            xprop -spy -root $WATCHED_ROOT_ATOMS 2>/dev/null \
               | awk -v tag="$EVENT_TAG" '{ printf "%s %s\n", tag, $0; fflush() }' \
               > "$DAEMON_CMD_PIPE"
             # xprop died (X server gone, atom missing, etc) — back off then retry
@@ -267,12 +270,86 @@ stop_event_watcher() {
     fi
 }
 
+# Resolve X display authorization dynamically. Under the systemd user
+# unit there is no session environment: DISPLAY comes from the unit, but
+# the X cookie location depends on the display manager (lightdm:
+# /run/lightdm/<user>/xauthority; GDM: /run/user/<uid>/gdm/Xauthority;
+# most others: ~/.Xauthority). Probe candidates until an X call actually
+# succeeds rather than hardcoding any single manager's path — a cookie
+# file existing does not mean it holds a valid cookie for this DISPLAY.
+# When started from a session (legacy nohup path), the inherited
+# environment already works and the first probe short-circuits.
+ensure_x_authority() {
+    : "${DISPLAY:=:0}"; export DISPLAY
+    if xdotool getdisplaygeometry >/dev/null 2>&1; then
+        return 0  # already authorized (session env or valid default)
+    fi
+    local xa
+    for xa in "${XAUTHORITY:-}" \
+              "/run/lightdm/$(id -un)/xauthority" \
+              "/run/user/$(id -u)/gdm/Xauthority" \
+              "$HOME/.Xauthority"; do
+        [[ -n "$xa" && -r "$xa" ]] || continue
+        if XAUTHORITY="$xa" xdotool getdisplaygeometry >/dev/null 2>&1; then
+            export XAUTHORITY="$xa"
+            echo "$(date): X authority resolved to $xa"
+            return 0
+        fi
+    done
+    echo "$(date): ERROR: no working X authority found for DISPLAY=$DISPLAY" >&2
+    return 1
+}
+
 # Combined daemon that handles both window monitoring and IPC commands
 watch_daemon_with_ipc() {
+    # errexit OFF for the daemon's lifetime. place-window runs under
+    # `set -euo pipefail`, and this file's `set -uo pipefail` header does
+    # NOT clear an inherited -e when sourced — `set` only adds options.
+    # Commit 886c867 removed -e from the header to stop unguarded nonzero
+    # probes from silently terminating the daemon, but the -e inherited
+    # from place-window survived that fix, so the daemon kept dying: any
+    # window closing between the window-list snapshot and the geometry
+    # apply makes wmctrl/xdotool exit 1 (BadWindow) and errexit kills the
+    # whole process with no message. Root-caused 2026-07-13 via the
+    # EXIT-trap instrumentation below.
+    set +e
+
+    # Exit 1 (not 0) if X is unreachable so the systemd unit's
+    # Restart=on-failure retries — this self-heals the race where the
+    # unit starts before the X session is fully up at login. The burst
+    # limit (10/min) stops the loop if X genuinely never comes.
+    if ! ensure_x_authority; then
+        exit 1
+    fi
+
     # Single-process daemon: event watcher + command loop + safety-net tick.
     trap 'stop_event_watcher; cleanup_daemon_ipc; echo "Watch daemon stopped"; exit 0' SIGINT SIGTERM
     trap 'echo "$(date): SIGUSR1 -> reapply layouts"; apply_workspace_layout' SIGUSR1
     trap 'echo "$(date): SIGUSR2 -> wake from idle"' SIGUSR2
+
+    # Post-mortem instrumentation (field crashes, July 2026): the daemon has
+    # died with no bash error in the log, no journal entry, the cleanup trap
+    # never firing, and its watcher children surviving — i.e. something that
+    # bypasses every handler above. Log every remaining exit path so the next
+    # death identifies itself:
+    #   - EXIT fires on normal exits, shell fatal errors (set -u), and any
+    #     trapped signal. It CANNOT fire on SIGKILL — so a death that leaves
+    #     no "daemon EXIT" line at all means SIGKILL.
+    #   - The signals below terminate silently by default and are not logged
+    #     by the kernel. Trapping them converts a silent death into a logged
+    #     one. Exit codes follow the 128+N convention. The HUP trap is a
+    #     no-op under nohup (bash keeps entry-time SIG_IGN) — that is fine;
+    #     it matters for daemons started without nohup (XDG autostart Exec).
+    # NB: capture $? FIRST — a $(date) earlier in the same trap string
+    # would overwrite it with the substitution's own (always 0) status,
+    # which is exactly how the errexit death initially masqueraded as a
+    # clean "status=0" exit during the July 2026 investigation.
+    trap '_rc=$?; echo "$(date): daemon EXIT status=$_rc pid=$$"' EXIT
+    trap 'echo "$(date): SIGHUP received - exiting"; exit 129' SIGHUP
+    trap 'echo "$(date): SIGPIPE received - exiting"; exit 141' SIGPIPE
+    trap 'echo "$(date): SIGALRM received - exiting"; exit 142' SIGALRM
+    trap 'echo "$(date): SIGQUIT received - exiting"; exit 131' SIGQUIT
+    trap 'echo "$(date): SIGABRT received - exiting"; exit 134' SIGABRT
 
     echo "$(date): Watch daemon with IPC started (single loop, event-driven)"
 
@@ -345,6 +422,7 @@ watch_daemon_with_ipc() {
             start_event_watcher
             SCREEN_INFO_CACHE_TIME=0            # monitors may have changed
             WINDOW_COUNT=()                     # force dirty on next reconcile
+            WINDOW_IDS=()                       # membership snapshot is stale too
             HOLD_UNTIL_MS=()                    # stale holds from before suspend
             COOLDOWN_UNTIL_MS=0
             monitor_tick
@@ -364,13 +442,15 @@ watch_daemon_with_ipc() {
                             LAST_KNOWN_WS="$_new_ws"
                         fi
                     fi
-                    # Rate limit applies ONLY to _NET_ACTIVE_WINDOW (fires on
-                    # every focus click). _NET_CLIENT_LIST (window open/close)
-                    # and _NET_CURRENT_DESKTOP (workspace switch) are rare,
-                    # meaningful events and always tick immediately — else a
-                    # new window launched right after a click (launcher, menu)
-                    # lands inside the 1s window and waits for the flush.
-                    if [[ "$cmd" == *_NET_ACTIVE_WINDOW* ]] \
+                    # Rate limit applies only to click-frequency atoms
+                    # (_NET_ACTIVE_WINDOW, _NET_CLIENT_LIST_STACKING — see
+                    # event_is_rate_limited). _NET_CLIENT_LIST (window
+                    # open/close) and _NET_CURRENT_DESKTOP (workspace switch)
+                    # are rare, meaningful events and always tick immediately
+                    # — else a new window launched right after a click
+                    # (launcher, menu) lands inside the 1s window and waits
+                    # for the flush.
+                    if event_is_rate_limited "$cmd" \
                        && (( EPOCHSECONDS - LAST_EVENT_TICK_TS < 1 )); then
                         PENDING_EVENT_TICK=1
                     else
@@ -390,6 +470,16 @@ watch_daemon_with_ipc() {
                     # many newlines; sentinel line tells the client where to stop.
                     local resp
                     resp="$(handle_daemon_command "$cmd" 2>&1)"
+                    # Drain orphaned bytes from the response pipe before
+                    # writing. A client that times out leaves its response
+                    # unread in the FIFO forever (fd 4 is open read-write, so
+                    # there is no EOF-based cleanup); enough orphans fill the
+                    # 64KB pipe buffer and the printf below then blocks the
+                    # daemon permanently — verified experimentally. A new
+                    # command arriving means no client is legitimately
+                    # mid-read, so anything still in the pipe is stale.
+                    local _stale
+                    while IFS= read -r -t 0.01 -u 4 _stale; do :; done
                     if [[ -n "$resp" ]]; then
                         printf '%s\n' "$resp" >&4
                     fi
@@ -429,17 +519,6 @@ apply_workspace_layout() {
     done
 }
 
-# Start the daemon directly without subprocess
-watch_daemon() {
-    echo "Watch daemon started (PID: $$)"
-    
-    # Set up IPC pipes for command handling
-    setup_daemon_ipc
-    
-    # Start both window monitoring and command listening
-    watch_daemon_with_ipc
-}
-
 # Check if watch daemon is running
 is_daemon_running() {
     [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
@@ -448,45 +527,6 @@ is_daemon_running() {
 # Get daemon PID if running
 get_daemon_pid() {
     [[ -f "$PID_FILE" ]] && cat "$PID_FILE"
-}
-
-# Stop watch daemon
-stop_daemon() {
-    if is_daemon_running; then
-        echo "Stopping watch mode daemon..."
-        local pid=$(get_daemon_pid)
-        kill "$pid" 2>/dev/null || true
-        
-        # Give daemon time to clean up
-        sleep 1
-        
-        # Force cleanup pipes and PID file if daemon didn't do it
-        cleanup_daemon_ipc 2>/dev/null || true
-        rm -f "$PID_FILE"
-        
-        echo "Watch mode stopped"
-        return 0
-    else
-        echo "Watch mode is not running"
-        return 1
-    fi
-}
-
-# Start daemon in background
-start_daemon_background() {
-    if is_daemon_running; then
-        echo "Watch mode already running (PID: $(get_daemon_pid))"
-        return 1
-    fi
-    
-    echo "Starting watch mode daemon..."
-    nohup "$0" watch daemon >/dev/null 2>&1 &
-    local daemon_pid=$!
-    echo "$daemon_pid" > "$PID_FILE"
-    disown || true
-    echo "Watch daemon started in background (PID: $daemon_pid)"
-    echo "Use 'place-window watch stop' to stop it"
-    return 0
 }
 
 # Toggle auto-layout on/off (daemon keeps running)
@@ -520,10 +560,6 @@ show_daemon_status() {
     fi
 }
 
-# SSOT functions now defined at top of file in global scope
-
-# detect_current_ids_for_ws_mon removed - using list_windows_on_monitor_for_workspace directly
-
 # Detect window-set changes for a single (workspace, monitor). No persistence
 # of window IDs — we track the post-filter, per-monitor window count and only
 # flip the dirty bit when it actually moves.
@@ -548,12 +584,27 @@ reconcile_ws_mon() {  # args: workspace monitor_name
         current_count=$(printf '%s\n' "$current_windows" | grep -c .)
     fi
 
+    # Compare MEMBERSHIP, not just count. A window moved in from another
+    # workspace while one left (swap-rearrange via the pager), or moved in
+    # after another closed, keeps the count identical — a count-only compare
+    # never flags it and the moved window is never re-positioned. Sorted,
+    # space-joined IDs make the comparison order-independent.
+    local current_ids=""
+    if [[ -n "$current_windows" ]]; then
+        current_ids=$(printf '%s\n' "$current_windows" | sort | tr '\n' ' ')
+    fi
+
     local last_count="${WINDOW_COUNT["$k"]-0}"
-    if [[ "$current_count" -ne "$last_count" ]]; then
+    local last_ids="${WINDOW_IDS["$k"]-}"
+    if [[ "$current_ids" != "$last_ids" ]]; then
         WINDOW_DIRTY["$k"]=1
         WINDOW_COUNT["$k"]=$current_count
-        WINDOW_GEN["$k"]=$(( ${WINDOW_GEN["$k"]-0} + 1 ))
-        echo "$(date): Window count changed on monitor $mon: $last_count -> $current_count"
+        WINDOW_IDS["$k"]="$current_ids"
+        if [[ "$current_count" -ne "$last_count" ]]; then
+            echo "$(date): Window count changed on monitor $mon: $last_count -> $current_count"
+        else
+            echo "$(date): Window membership changed on monitor $mon (count unchanged: $current_count)"
+        fi
     fi
 }
 
@@ -608,28 +659,6 @@ monitor_tick() {
     done
 }
 
-# list_windows_on_monitor_for_workspace now defined at top of file
-
-#========================================
-# DAEMON-ONLY WINDOW LIST FUNCTIONS
-# These functions need initialized window lists and run in daemon context
-#========================================
-
-# Trigger daemon to immediately reapply layouts (called by manual commands)
-trigger_daemon_reapply() {
-    if is_daemon_running; then
-        local daemon_pid
-        daemon_pid=$(get_daemon_pid)
-        echo "Triggering daemon to reapply layouts..."
-        kill -SIGUSR1 "$daemon_pid" 2>/dev/null
-        return $?
-    else
-        return 1
-    fi
-}
-
-# IPC Communication (variables defined at top of file)
-
 # Send command to daemon and get response
 send_daemon_command() {
     local command="$1"
@@ -647,8 +676,13 @@ send_daemon_command() {
     # lines until we see it or the deadline passes.
     echo "$command" > "$DAEMON_CMD_PIPE" || die "Failed to send command to daemon"
 
+    # 15s deadline, not 5: a full layout apply takes multiple seconds
+    # (settle-waits are ~250ms per window, and the daemon may be
+    # mid-tick when the command arrives). With a 5s deadline, heavier
+    # commands routinely timed out and orphaned their responses in the
+    # pipe — feeding the pipe-fill failure mode drained above.
     local response="" line got_response=0
-    local deadline=$(( $(date +%s) + 5 ))
+    local deadline=$(( $(date +%s) + 15 ))
 
     exec 5<"$DAEMON_RESP_PIPE"
     while (( $(date +%s) < deadline )); do
@@ -708,7 +742,7 @@ handle_daemon_command() {
             ;;
         cycle*)
             if [[ "$command" == *"counter-clockwise"* ]]; then
-                response=$(reverse_cycle_window_positions 2>&1)
+                response=$(cycle_window_positions counter-clockwise 2>&1)
             else
                 response=$(cycle_window_positions 2>&1)
             fi
@@ -729,13 +763,15 @@ handle_daemon_command() {
     echo "$response"
 }
 
-# Master-stack layout for current monitor only
+# Master-stack layout for one monitor (defaults to the current monitor;
+# master_stack_layout passes each monitor explicitly for --all).
 master_stack_layout_current_monitor() {
     local orientation="$1"  # vertical or horizontal
     local percentage="${2:-60}"  # master window percentage (default 60%)
-    
+    local current_monitor="${3:-}"  # optional monitor override ("name:x:y:w:h")
+
     get_screen_info
-    local current_monitor=$(get_current_monitor)
+    [[ -z "$current_monitor" ]] && current_monitor=$(get_current_monitor)
     local current_workspace=$(get_current_workspace)
 
     # Get windows using live snapshot with configured ordering strategy.
@@ -786,8 +822,7 @@ master_stack_layout() {
     # Get current workspace and monitor info
     local current_workspace=$(get_current_workspace)
     get_screen_info
-    local current_monitor=$(get_current_monitor)
-    
+
     local monitors_applied=0
     local total_windows=0
     
@@ -809,22 +844,9 @@ master_stack_layout() {
         if [[ $num_windows -gt 0 ]]; then
             IFS=':' read -r name mx my mw mh <<< "$monitor"
             echo "Monitor $name: $num_windows window(s)"
-            
-            # Temporarily override current monitor context for the single-monitor function
-            local original_monitor="$current_monitor"
 
-            # Save and override get_current_monitor to return this specific monitor
-            local _saved_get_current_monitor
-            _saved_get_current_monitor="$(declare -f get_current_monitor)"
-            get_current_monitor() { echo "$monitor"; }
+            master_stack_layout_current_monitor "$orientation" "$percentage" "$monitor"
 
-            # Apply master-stack layout to this monitor using the single-monitor function
-            master_stack_layout_current_monitor "$orientation" "$percentage"
-
-            # Restore original get_current_monitor function
-            unset -f get_current_monitor
-            [[ -n "$_saved_get_current_monitor" ]] && eval "$_saved_get_current_monitor"
-            
             monitors_applied=$((monitors_applied + 1))
         else
             IFS=':' read -r name mx my mw mh <<< "$monitor"

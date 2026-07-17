@@ -17,12 +17,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source all library modules
 source "$SCRIPT_DIR/lib/config.sh"
-source "$SCRIPT_DIR/lib/monitors.sh" 
+source "$SCRIPT_DIR/lib/monitors.sh"
 source "$SCRIPT_DIR/lib/windows.sh"
 source "$SCRIPT_DIR/lib/layouts.sh"
 source "$SCRIPT_DIR/lib/daemon.sh"
 source "$SCRIPT_DIR/lib/interactive.sh"
-source "$SCRIPT_DIR/lib/advanced.sh"
 
 # Initialize configuration
 init_config
@@ -34,6 +33,15 @@ load_config
 DAEMON_MODE=${DAEMON_MODE:-false}
 
 # Main command processing
+
+# fd 6 = diagnostic log channel. The daemon rebinds it in
+# watch_daemon_with_ipc so IPC-captured commands still log to daemon.log;
+# for CLI invocations it is plain stdout. Opened here so functions shared
+# with the daemon (reapply_saved_layout_for_monitor, etc.) can write >&6
+# unconditionally — an unopened fd 6 would fail the redirect and, under
+# set -e, kill the CLI.
+exec 6>&1
+
 case "${1:-}" in
     "")
         # No arguments - interactive mode
@@ -75,14 +83,6 @@ case "${1:-}" in
         # List saved presets
         echo "Available presets:"
         grep -v '^#' "$PRESETS_FILE" | cut -d= -f1 | sed 's/^/  - /'
-        ;;
-    test-init)
-        # Test initialization functionality
-        test_initialization
-        ;;
-    debug-lists)
-        # Show all stored window lists
-        debug_window_lists
         ;;
     monitors)
         # Show monitor information
@@ -141,22 +141,18 @@ case "${1:-}" in
         case "${2:-}" in
             vertical|vertical-right|horizontal)
                 # Parse percentage and validate
+                all=""
                 if [[ "${3:-}" == "--all" ]]; then
+                    all=" --all"
                     percentage="${4:-60}"
-                    if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
-                        send_daemon_command "master $2 --all $percentage"
-                    else
-                        echo "Error: Percentage must be between 10 and 90"
-                        exit 1
-                    fi
                 else
                     percentage="${3:-60}"
-                    if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
-                        send_daemon_command "master $2 $percentage"
-                    else
-                        echo "Error: Percentage must be between 10 and 90"
-                        exit 1
-                    fi
+                fi
+                if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
+                    send_daemon_command "master $2$all $percentage"
+                else
+                    echo "Error: Percentage must be between 10 and 90"
+                    exit 1
                 fi
                 ;;
             center)
@@ -242,7 +238,18 @@ case "${1:-}" in
         esac
         ;;
     watch)
-        # Watch mode for automatic window tiling
+        # Watch mode for automatic window tiling.
+        #
+        # Preferred manager is the systemd user unit (installed by
+        # install.sh): it restarts the daemon on failure, appends to
+        # daemon.log instead of truncating it, and SIGTERMs the whole
+        # control group on stop so watcher subshells and xprop children
+        # never leak. The legacy nohup/pkill path is kept as a fallback
+        # for environments without a reachable user manager.
+        _watch_systemd_available() {
+            [[ -f "$HOME/.config/systemd/user/window-positioning.service" ]] \
+                && systemctl --user show-environment >/dev/null 2>&1
+        }
         case "${2:-}" in
             start)
                 if is_daemon_running; then
@@ -250,8 +257,14 @@ case "${1:-}" in
                     exit 0
                 fi
                 echo "Starting window-positioning daemon..."
-                nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
-                
+                if _watch_systemd_available; then
+                    systemctl --user start window-positioning.service
+                else
+                    # Legacy fallback. >> not >: preserve post-mortem
+                    # evidence from previous runs in daemon.log.
+                    nohup "$0" watch daemon >> ~/.config/window-positioning/daemon.log 2>&1 &
+                fi
+
                 # Wait for daemon to fully initialize with retry mechanism
                 max_attempts=10
                 attempt=1
@@ -263,7 +276,7 @@ case "${1:-}" in
                     fi
                     ((attempt++))
                 done
-                
+
                 if [[ $attempt -gt $max_attempts ]]; then
                     echo "✗ Failed to start daemon after $max_attempts attempts"
                     echo "Check: tail ~/.config/window-positioning/daemon.log"
@@ -276,37 +289,67 @@ case "${1:-}" in
                     exit 1
                 fi
                 echo "Stopping window-positioning daemon..."
-                pkill -f "place-window.*watch.*daemon"
+                if _watch_systemd_available; then
+                    systemctl --user stop window-positioning.service
+                    # A legacy nohup-started daemon is not under the unit's
+                    # control group — catch it too so stop means stop.
+                    if is_daemon_running; then
+                        pkill -f "place-window.*watch.*daemon"
+                    fi
+                else
+                    pkill -f "place-window.*watch.*daemon"
+                fi
                 echo "✓ Daemon stopped"
                 ;;
             status)
                 show_daemon_status
-                echo "Autostart: $([ -f ~/.config/autostart/window-positioning.desktop ] && echo 'enabled' || echo 'disabled')"
+                if _watch_systemd_available; then
+                    echo "Manager: systemd user unit ($(systemctl --user is-enabled window-positioning.service 2>/dev/null || echo 'not enabled'), $(systemctl --user is-active window-positioning.service 2>/dev/null || echo 'inactive'))"
+                else
+                    echo "Autostart: $([ -f ~/.config/autostart/window-positioning.desktop ] && echo 'enabled (legacy XDG autostart)' || echo 'disabled')"
+                fi
                 ;;
             enable)
-                if [ -f ~/.config/autostart/window-positioning.desktop ]; then
-                    echo "✓ Auto-start already enabled (XDG autostart)"
+                if _watch_systemd_available; then
+                    systemctl --user enable window-positioning.service
+                    echo "✓ Auto-start enabled (systemd user unit)"
+                elif [ -f ~/.config/autostart/window-positioning.desktop ]; then
+                    echo "✓ Auto-start already enabled (legacy XDG autostart)"
                 else
                     echo "✗ Auto-start not configured"
-                    echo "Run install script to set up XDG autostart"
+                    echo "Run install script to set up the systemd user unit"
                 fi
                 ;;
             disable)
+                if _watch_systemd_available; then
+                    systemctl --user disable window-positioning.service
+                    echo "✓ Auto-start disabled (systemd user unit)"
+                fi
                 if [ -f ~/.config/autostart/window-positioning.desktop ]; then
-                    echo "Disabling auto-start..."
+                    echo "Removing legacy XDG autostart entry..."
                     rm ~/.config/autostart/window-positioning.desktop
-                    echo "✓ Auto-start disabled"
-                else
-                    echo "✓ Auto-start already disabled"
+                    echo "✓ Legacy auto-start removed"
                 fi
                 ;;
             restart)
                 echo "Restarting window-positioning daemon..."
-                if is_daemon_running; then
-                    pkill -f "place-window.*watch.*daemon"
-                    sleep 1
+                if _watch_systemd_available; then
+                    # Clear any legacy nohup instance first: the unit's
+                    # single-instance guard would otherwise refuse to start
+                    # and burn through the restart burst limit.
+                    if is_daemon_running; then
+                        pkill -f "place-window.*watch.*daemon" 2>/dev/null || true
+                        sleep 1
+                    fi
+                    systemctl --user reset-failed window-positioning.service 2>/dev/null || true
+                    systemctl --user restart window-positioning.service
+                else
+                    if is_daemon_running; then
+                        pkill -f "place-window.*watch.*daemon"
+                        sleep 1
+                    fi
+                    nohup "$0" watch daemon >> ~/.config/window-positioning/daemon.log 2>&1 &
                 fi
-                nohup "$0" watch daemon > ~/.config/window-positioning/daemon.log 2>&1 &
                 sleep 1
                 if is_daemon_running; then
                     echo "✓ Daemon restarted successfully (PID: $(get_daemon_pid))"
@@ -333,9 +376,18 @@ case "${1:-}" in
                 disable_daemon_auto_layout
                 ;;
             daemon)
-                # Internal daemon mode - called by XDG autostart or manually
+                # Internal daemon mode - called by the systemd unit or manually.
+                # Refuse a second instance: without this guard, a second
+                # `watch daemon` (e.g. a leftover legacy autostart entry
+                # racing the systemd unit at login) deletes and recreates
+                # the live daemon's IPC pipes, leaving two daemons fighting
+                # over events and clients talking to the wrong one.
+                if is_daemon_running; then
+                    echo "✗ Daemon already running (PID: $(get_daemon_pid)); refusing second instance" >&2
+                    exit 1
+                fi
                 DAEMON_MODE=true
-                watch_daemon
+                watch_daemon_with_ipc
                 ;;
             *)
                 echo "Watch mode commands (XDG autostart daemon):"

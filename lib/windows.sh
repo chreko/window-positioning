@@ -37,18 +37,6 @@ get_window_geometry() {
     '
 }
 
-# --- Frame extents: left,right,top,bottom (defaults to 0s if missing) ---
-get_frame_extents() {  # $1: window id
-    local id="$1"
-    local ext
-    ext=$(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null | awk -F' = ' '{print $2}')
-    if [[ -n "$ext" ]]; then
-        echo "$ext" | awk -F', ' '{print $1","$2","$3","$4}'
-    else
-        echo "0,0,0,0"
-    fi
-}
-
 # --- Read CLIENT geometry consistently as x,y,w,h ---
 get_window_client_geometry() {
     local id="$1"
@@ -373,71 +361,6 @@ get_visible_windows_by_stacking() {
     printf '%s\n' "${window_data[@]}" | sort -t: -k2,2nr | cut -d: -f1
 }
 
-# Get visible windows on specific monitor, sorted by position
-
-
-# Get visible windows on specific monitor, sorted by creation order (oldest first)
-
-# trigger_daemon_reapply lives in daemon.sh, which is sourced after this file.
-
-# initialize_all_workspace_lists removed: it was a leftover of the removed
-# SSOT window-list persistence (see commits e6dce33..c2031ee) — it queried
-# every workspace/monitor and discarded the results, pure fork burn.
-
-# Debug function to show current window detection
-debug_window_lists() {
-    echo "=== Window Detection Debug ==="
-    echo "Current context:"
-    echo "  Current workspace: $(get_current_workspace)"
-    get_screen_info
-    local current_monitor=$(get_current_monitor)
-    IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
-    echo "  Current monitor: $monitor_name"
-    
-    # Test current window detection
-    local current_list=$(get_visible_windows "$monitor_name")
-    echo "  Windows on current monitor: '$current_list'"
-    
-    echo "=== End Debug ==="
-}
-
-# Test function to debug initialization
-test_initialization() {
-    echo "=== Testing Initialization ==="
-    
-    # Test workspace detection
-    echo "Current workspace: $(get_current_workspace)"
-    echo "Total workspaces: $(wmctrl -d 2>/dev/null | wc -l)"
-    
-    # Test monitor detection
-    get_screen_info
-    echo "Detected monitors: ${#MONITORS[@]}"
-    for monitor in "${MONITORS[@]}"; do
-        IFS=':' read -r name mx my mw mh <<< "$monitor"
-        echo "  Monitor: $name (${mw}x${mh}+${mx}+${my})"
-    done
-    
-    # Test window detection on current workspace
-    local current_workspace=$(get_current_workspace)
-    echo "Testing window detection on current workspace $current_workspace:"
-    local windows_current=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && windows_current+=("$line")
-    done < <(get_visible_windows)
-    echo "  Found ${#windows_current[@]} windows: ${windows_current[*]}"
-    
-    # Test monitor assignment for each window
-    for window_id in "${windows_current[@]}"; do
-        local window_monitor=$(get_window_monitor "$window_id")
-        echo "  Window $window_id -> Monitor: $window_monitor"
-    done
-    
-    echo "=== End Test ==="
-}
-
-# Export functions for use in subshells (needed for process substitution)
-
-
 #========================================
 # WINDOW OPERATIONS
 #========================================
@@ -651,61 +574,16 @@ minimize_others() {
         fi
     done
     
-    # Automatically apply layout to remaining window if daemon is running
-    if [[ $minimized_count -gt 0 ]]; then
-        if is_daemon_running; then
-            echo "Daemon detected - applying layout to remaining window(s)"
-            sleep 0.2  # Brief delay to ensure minimization is complete
-            
-            # Apply appropriate layout to the current monitor
-            get_screen_info
-            local current_monitor=$(get_current_monitor)
-            IFS=':' read -r monitor_name mx my mw mh <<< "$current_monitor"
-            
-            # Get current workspace and check for saved layout
-            local current_workspace=$(get_current_workspace)
-            local monitor_layout=$(get_workspace_monitor_layout "$current_workspace" "$monitor_name" "" "")
-
-            # Get current windows on monitor
-            local windows_on_monitor=()
-            while IFS= read -r id; do
-                [[ -n "$id" ]] && windows_on_monitor+=("$id")
-            done < <(get_visible_windows "$monitor_name")
-
-            if [[ ${#windows_on_monitor[@]} -gt 0 ]]; then
-                if [[ -n "$monitor_layout" ]]; then
-                    echo "Applying saved monitor layout: $monitor_layout"
-                    if [[ "$monitor_layout" == "auto" ]]; then
-                        auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
-                    elif [[ "$monitor_layout" =~ ^master[[:space:]](.+)$ ]]; then
-                        local master_params="${BASH_REMATCH[1]}"
-                        read -r orientation percentage <<< "$master_params"
-
-                        case "$orientation" in
-                            center)
-                                apply_meta_center_sidebar_single_monitor "$current_monitor" "${percentage:-50}" "${windows_on_monitor[@]}"
-                                ;;
-                            vertical)
-                                apply_meta_main_sidebar_single_monitor "$current_monitor" "${percentage:-60}" left "${windows_on_monitor[@]}"
-                                ;;
-                            vertical-right)
-                                apply_meta_main_sidebar_single_monitor "$current_monitor" "${percentage:-60}" right "${windows_on_monitor[@]}"
-                                ;;
-                            *)
-                                apply_meta_topbar_main_single_monitor "$current_monitor" "${percentage:-60}" "${windows_on_monitor[@]}"
-                                ;;
-                        esac
-                    else
-                        auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
-                    fi
-                else
-                    echo "Applying auto-layout to current monitor"
-                    auto_layout_single_monitor "$current_monitor" "${windows_on_monitor[@]}"
-                fi
-            fi
-        fi
+    # Automatically apply layout to the remaining window(s) if daemon is running.
+    # reapply_saved_layout_for_monitor handles the saved-master/auto/no-saved
+    # dispatch — the same logic the daemon's tick uses.
+    if [[ $minimized_count -gt 0 ]] && is_daemon_running; then
+        echo "Daemon detected - applying layout to remaining window(s)"
+        sleep 0.2  # Brief delay to ensure minimization is complete
+        reapply_saved_layout_for_monitor "$(get_current_workspace)" "$(get_current_monitor)"
     fi
-    
+
+
     if [[ $kept_count -eq 0 ]]; then
         echo "Warning: Active window was not found in visible windows list!"
     fi
@@ -763,120 +641,48 @@ swap_window_positions() {
     fi
 }
 
-# Helper function to swap two windows' geometries directly
+# Helper function to swap two windows' geometries directly.
+# _apply_frame_exact is the `wmctrl -e "1,(X-L),(Y-T)"` pattern settled on in
+# commit 407b3e4: it lands each window's frame at the other's exact xwininfo
+# position regardless of per-window extents or toolkit gravity. Both
+# geometries are read before either window moves.
 swap_window_geometries() {
     local win1="$1" win2="$2"
-
-    # xfwm4 quirk: `wmctrl -e` with NorthWest gravity lands the window at
-    # xwininfo position (X+L, Y+T). To place a window at xwininfo (X, Y),
-    # pass `wmctrl -e (X-L, Y-T)` — the pattern settled on in commit 407b3e4,
-    # applied inline here (equivalent to _apply_frame_exact, kept explicit
-    # to preserve that revert's narrative). Gravity is forced to NorthWest
-    # ("1,") so Static-gravity toolkits (kitty, Qt) obey the same rule.
-    local L1 R1 T1 B1 L2 R2 T2 B2
-    read -r L1 R1 T1 B1 < <(xprop -id "$win1" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-    read -r L2 R2 T2 B2 < <(xprop -id "$win2" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-    : "${L1:=0}"; : "${T1:=0}"; : "${L2:=0}"; : "${T2:=0}"
-
-    local info1 info2 x1 y1 w1 h1 x2 y2 w2 h2
-    info1=$(xwininfo -id "$win1")
-    info2=$(xwininfo -id "$win2")
-    x1=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info1")
-    y1=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info1")
-    w1=$(awk '/Width:/ {print $NF}' <<<"$info1")
-    h1=$(awk '/Height:/ {print $NF}' <<<"$info1")
-    x2=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info2")
-    y2=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info2")
-    w2=$(awk '/Width:/ {print $NF}' <<<"$info2")
-    h2=$(awk '/Height:/ {print $NF}' <<<"$info2")
-
-    # Subtract per-window frame extents so the result lands at the source's
-    # original xwininfo position.
-    wmctrl -i -r "$win1" -e "1,$((x2 - L1)),$((y2 - T1)),$w2,$h2"
+    local x1 y1 w1 h1 x2 y2 w2 h2
+    IFS=',' read -r x1 y1 w1 h1 <<<"$(get_window_geometry "$win1")"
+    IFS=',' read -r x2 y2 w2 h2 <<<"$(get_window_geometry "$win2")"
+    _apply_frame_exact "$win1" "$x2" "$y2" "$w2" "$h2"
     wait_window_settled "$win1"
-    wmctrl -i -r "$win2" -e "1,$((x1 - L2)),$((y1 - T2)),$w1,$h1"
+    _apply_frame_exact "$win2" "$x1" "$y1" "$w1" "$h1"
     wait_window_settled "$win2"
 }
 
+# Rotate all window positions on the current monitor.
+# Arg: clockwise (default, A B C -> C A B) or counter-clockwise (A B C -> B C A).
+# Positions are xwininfo coordinates; _apply_frame_exact subtracts each
+# destination window's own (L, T) and forces NorthWest gravity — the 407b3e4
+# pattern that keeps Static-gravity toolkits (kitty, Qt) on the same rule.
 cycle_window_positions() {
-    # Get current context
-    get_current_context
-    
-    mapfile -t windows < <(get_windows_ordered)
-    local n=${#windows[@]}
-    echo "DEBUG: Found ${n} windows to cycle" >&2
-    (( n < 2 )) && { echo "DEBUG: Not enough windows to cycle (need at least 2)" >&2; return 0; }
-    
-    # Store xwininfo positions. Each apply below subtracts the destination
-    # window's own (L, T) and forces NorthWest gravity ("1,") — with NW
-    # gravity xfwm4 lands the window at xwininfo (X+L, Y+T), and forcing it
-    # keeps Static-gravity toolkits (kitty, Qt) on the same rule.
-    local geometries=()
-    for window in "${windows[@]}"; do
-        geometries+=("$(get_window_geometry "$window")")
-    done
-    
-    # Clockwise rotation: each window takes the position of the next window
-    # A B C -> C A B: window[0] -> position[1], window[1] -> position[2], window[2] -> position[0]
-    for (( i = 0; i < n; i++ )); do
-        local target_pos=$(( (i + 1) % n ))
-        local geom="${geometries[$target_pos]}"
-        IFS=',' read -r x y w h <<< "$geom"
-        local L R T B
-        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-        : "${L:=0}"; : "${T:=0}"
-        wmctrl -i -r "${windows[$i]}" -e "1,$((x - L)),$((y - T)),$w,$h"
-        wait_window_settled "${windows[$i]}"
-    done
-    
-    # After rotation, check if we should reapply layout
-    # Skip reapplying for master layouts that have specific window role assignments
-    # as rotation is intended to change which window has which role
-    local current_layout=$(get_workspace_monitor_layout "$CURRENT_WS" "$CURRENT_MONITOR_NAME" "" "")
-    if [[ -n "$current_layout" && "$current_layout" =~ ^master[[:space:]] ]]; then
-        echo "Skipping layout reapplication for master layout to preserve rotation"
-        # Set a brief hold to prevent daemon from immediately reapplying
-        prevent_relayout "$CURRENT_WS" "$CURRENT_MONITOR_NAME"
-    elif declare -f reapply_saved_layout_for_monitor >/dev/null 2>&1; then
-        sleep 0.1  # Brief delay for window movements to complete
-        reapply_saved_layout_for_monitor "$CURRENT_WS" "$CURRENT_MONITOR"
-    fi
-}
+    local step=1
+    [[ "${1:-}" == "counter-clockwise" ]] && step=-1
 
-reverse_cycle_window_positions() {
-    # Get current context
     get_current_context
-    
     mapfile -t windows < <(get_windows_ordered)
     local n=${#windows[@]}
     (( n < 2 )) && return 0
-    
-    # Store xwininfo positions. Each apply below subtracts the destination
-    # window's own (L, T) and forces NorthWest gravity ("1,") — with NW
-    # gravity xfwm4 lands the window at xwininfo (X+L, Y+T), and forcing it
-    # keeps Static-gravity toolkits (kitty, Qt) on the same rule.
+
     local geometries=()
     for window in "${windows[@]}"; do
         geometries+=("$(get_window_geometry "$window")")
     done
-    
-    # Counter-clockwise rotation: each window takes the position of the previous window
-    # A B C -> B C A: window[0] -> position[2], window[1] -> position[0], window[2] -> position[1]
+
     for (( i = 0; i < n; i++ )); do
-        local target_pos=$(( (i - 1 + n) % n ))
-        local geom="${geometries[$target_pos]}"
+        local geom="${geometries[$(( (i + step + n) % n ))]}"
         IFS=',' read -r x y w h <<< "$geom"
-        local L R T B
-        read -r L R T B < <(xprop -id "${windows[$i]}" _NET_FRAME_EXTENTS 2>/dev/null \
-                           | awk -F' = ' '{print $2}' | sed 's/, / /g')
-        : "${L:=0}"; : "${T:=0}"
-        wmctrl -i -r "${windows[$i]}" -e "1,$((x - L)),$((y - T)),$w,$h"
+        _apply_frame_exact "${windows[$i]}" "$x" "$y" "$w" "$h"
         wait_window_settled "${windows[$i]}"
     done
-    
+
     # After rotation, check if we should reapply layout
     # Skip reapplying for master layouts that have specific window role assignments
     # as rotation is intended to change which window has which role
@@ -919,30 +725,6 @@ prevent_relayout() {
     cooldown_now 600
 }
 
-# Validate window list not empty
-validate_windows() {
-    local count="$1"
-    local message="${2:-No visible windows}"
-    if [[ $count -eq 0 ]]; then
-        echo "$message"
-        return 1
-    fi
-    return 0
-}
-
-# Find full monitor info by name
-find_monitor_by_name() {
-    local monitor_name="$1"
-    for mon in "${MONITORS[@]}"; do
-        if [[ "$mon" == "$monitor_name":* ]]; then
-            echo "$mon"
-            return 0
-        fi
-    done
-    # Not found, return the name as-is
-    echo "$monitor_name"
-}
-
 #========================================
 # CONFIGURABLE WINDOW ORDERING SYSTEM
 #========================================
@@ -973,34 +755,73 @@ get_windows_ordered() {
     esac
 }
 
-# Get windows on monitor using the configured ordering strategy
+# Simultaneous resize (xpytile-inspired): resize the selected window and
+# shift/shrink its adjacent windows so shared edges stay shared.
+simultaneous_resize() {
+    local direction="$1"  # expand-right, shrink-right, expand-down, shrink-down
+    local amount="${2:-50}"  # pixels to resize
 
-# Get windows for workspace/monitor using the configured ordering strategy
+    local target_id=$(pick_window)
+    echo "Finding adjacent windows..."
 
-# Set window ordering strategy
-set_window_order_strategy() {
-    local strategy="$1"
-    case "$strategy" in
-        position|spatial|creation|chronological|stacking|focus)
-            WINDOW_ORDER_STRATEGY="$strategy"
-            echo "Window ordering strategy set to: $strategy"
+    local adjacent=($(find_adjacent_windows "$target_id"))
+    if [[ ${#adjacent[@]} -eq 0 ]]; then
+        echo "No adjacent windows found for simultaneous resize"
+        return 1
+    fi
+
+    echo "Found ${#adjacent[@]} adjacent window(s)"
+
+    local target_geom=$(get_window_geometry "$target_id")
+    IFS=',' read -r tx ty tw th <<< "$target_geom"
+
+    # Sign of the change: +1 for expand, -1 for shrink. Computed by string
+    # match — bash arithmetic evaluates non-numeric identifiers as 0, so
+    # `(direction == "expand-right" ? a : -a)` is always (0 == 0 ? a : -a) = a,
+    # which silently turns shrink-* into expand-* and breaks adjacent windows.
+    local sign=1
+    [[ "$direction" == shrink-* ]] && sign=-1
+
+    case "$direction" in
+        expand-right|shrink-right)
+            # Coordinates here are read back from xwininfo (absolute frame
+            # positions), so use the absolute apply — apply_geometry's layout
+            # semantics would shift the window down by DECORATION_HEIGHT on
+            # every resize.
+            local new_tw=$((tw + sign * amount))
+            apply_geom_adaptive "$target_id" $tx $ty $new_tw $th
+
+            # Adjust right-adjacent windows
+            for adj in "${adjacent[@]}"; do
+                local adj_id="${adj%:*}"
+                local adj_dir="${adj#*:}"
+                if [[ "$adj_dir" == "right" ]]; then
+                    local adj_geom=$(get_window_geometry "$adj_id")
+                    IFS=',' read -r ax ay aw ah <<< "$adj_geom"
+                    local new_ax=$((ax + sign * amount))
+                    local new_aw=$((aw - sign * amount))
+                    apply_geom_adaptive "$adj_id" $new_ax $ay $new_aw $ah
+                fi
+            done
             ;;
-        *)
-            echo "Error: Invalid window ordering strategy '$strategy'"
-            echo "Valid strategies: position, spatial, creation, chronological, stacking, focus"
-            return 1
+        expand-down|shrink-down)
+            local new_th=$((th + sign * amount))
+            apply_geom_adaptive "$target_id" $tx $ty $tw $new_th
+
+            # Adjust bottom-adjacent windows
+            for adj in "${adjacent[@]}"; do
+                local adj_id="${adj%:*}"
+                local adj_dir="${adj#*:}"
+                if [[ "$adj_dir" == "bottom" ]]; then
+                    local adj_geom=$(get_window_geometry "$adj_id")
+                    IFS=',' read -r ax ay aw ah <<< "$adj_geom"
+                    local new_ay=$((ay + sign * amount))
+                    local new_ah=$((ah - sign * amount))
+                    apply_geom_adaptive "$adj_id" $new_ax $new_ay $aw $new_ah
+                fi
+            done
             ;;
     esac
-}
 
-# Show current window ordering strategy
-show_window_order_strategy() {
-    echo "Current window ordering strategy: $WINDOW_ORDER_STRATEGY"
-    echo ""
-    echo "Available strategies:"
-    echo "  position/spatial     - Order by position (left-to-right, top-to-bottom)"
-    echo "  creation/chronological - Order by window creation time"
-    echo "  stacking/focus       - Order by stacking/focus history (most recent first)"
-    echo ""
-    echo "Usage: set_window_order_strategy <strategy>"
+    echo "Simultaneous resize completed"
 }

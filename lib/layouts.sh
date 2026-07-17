@@ -8,8 +8,8 @@
 #
 # Functions defined here are called from daemon.sh (watch loop) and from
 # place-window directly. Bash resolves function names at call time, so
-# forward references to daemon-only helpers (e.g., trigger_daemon_reapply)
-# work even though daemon.sh is sourced after this file.
+# forward references to daemon-only helpers work even though daemon.sh is
+# sourced after this file.
 
 #========================================
 # SHARED HELPERS
@@ -541,8 +541,4 @@ auto_layout_all_monitors() {
     done
 
     echo "Auto-layout completed on all monitors"
-}
-
-auto_layout() {
-    auto_layout_current_monitor
 }

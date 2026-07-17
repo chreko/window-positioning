@@ -29,6 +29,25 @@ if [[ "$REAL_HOME" == "/root" ]]; then
 fi
 
 CONFIG_DIR="${REAL_HOME}/.config/window-positioning"
+REAL_UID=$(id -u "$REAL_USER")
+
+# Run a command as REAL_USER with the environment needed to reach their
+# systemd user manager and D-Bus session (both under /run/user/<uid>).
+# Under sudo, root's environment points at root's runtime dir, so plain
+# `systemctl --user` and `xfconf-query` fail — historically this left the
+# unit installed but never enabled, and the daemon dead after reboot.
+run_as_real_user() {
+    if [[ $EUID -eq 0 ]]; then
+        runuser -u "$REAL_USER" -- env \
+            XDG_RUNTIME_DIR="/run/user/$REAL_UID" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$REAL_UID/bus" \
+            "$@"
+    else
+        "$@"
+    fi
+}
+
+user_systemctl() { run_as_real_user systemctl --user "$@"; }
 
 # Debug information
 echo "Debug: USER=$USER, SUDO_USER=${SUDO_USER:-'not set'}, REAL_USER=$REAL_USER"
@@ -139,6 +158,14 @@ for lib_file in "$SCRIPT_DIR"/lib/*.sh; do
     fi
 done
 
+# Remove modules deleted from the repo (advanced.sh merged into windows.sh)
+for obsolete in advanced.sh; do
+    if [[ -f "$INSTALL_LIB_DIR/$obsolete" ]]; then
+        sudo rm -f "$INSTALL_LIB_DIR/$obsolete"
+        echo "  ✓ Removed obsolete $obsolete"
+    fi
+done
+
 # Create a wrapper script that knows where the libraries are
 echo "Creating main executable..."
 cat << 'EOF' > /tmp/place-window-wrapper
@@ -153,12 +180,11 @@ INSTALL_LIB_DIR="/usr/local/lib/place-window"
 
 # Source all library modules
 source "$INSTALL_LIB_DIR/config.sh"
-source "$INSTALL_LIB_DIR/monitors.sh" 
+source "$INSTALL_LIB_DIR/monitors.sh"
 source "$INSTALL_LIB_DIR/windows.sh"
 source "$INSTALL_LIB_DIR/layouts.sh"
 source "$INSTALL_LIB_DIR/daemon.sh"
 source "$INSTALL_LIB_DIR/interactive.sh"
-source "$INSTALL_LIB_DIR/advanced.sh"
 
 # Initialize configuration
 init_config
@@ -284,30 +310,44 @@ EOF
 chown "$REAL_USER:$REAL_USER" "$CONFIG_DIR/keyboard-shortcuts.txt" 2>/dev/null || true
 echo "✓ Created keyboard shortcuts reference"
 
-# Install XDG autostart service (more reliable for X11 applications)
-echo "Installing XDG autostart service..."
-AUTOSTART_DIR="${REAL_HOME}/.config/autostart"
-mkdir -p "$AUTOSTART_DIR"
-chown "$REAL_USER:$REAL_USER" "$AUTOSTART_DIR" 2>/dev/null || true
+# Install systemd user unit. Replaces the old XDG autostart entry, which
+# started the daemon with no output redirection (crashes left no log), no
+# already-running guard (two instances could fight over the IPC pipes),
+# and no supervision (any death was permanent until a manual restart).
+echo "Installing systemd user unit..."
+SYSTEMD_USER_DIR="${REAL_HOME}/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+chown "$REAL_USER:$REAL_USER" "$SYSTEMD_USER_DIR" 2>/dev/null || true
+cp "$SCRIPT_DIR/window-positioning.service" "$SYSTEMD_USER_DIR/"
+chown "$REAL_USER:$REAL_USER" "$SYSTEMD_USER_DIR/window-positioning.service" 2>/dev/null || true
 
-# Create XDG autostart desktop file
-cat > "$AUTOSTART_DIR/window-positioning.desktop" << EOF
-[Desktop Entry]
-Type=Application
-Name=Window Positioning Daemon
-Comment=Automatic window tiling daemon
-Exec=/usr/local/bin/place-window watch daemon
-Icon=preferences-system-windows
-Categories=System;
-X-GNOME-Autostart-enabled=true
-X-XFCE-Autostart-enabled=true
-X-XFCE-Autostart-Delay=5
-Hidden=false
-StartupNotify=false
-EOF
+# Migration: remove the legacy XDG autostart entry so it cannot race the
+# unit at login, and stop any legacy nohup-started daemon.
+if [[ -f "${REAL_HOME}/.config/autostart/window-positioning.desktop" ]]; then
+    rm -f "${REAL_HOME}/.config/autostart/window-positioning.desktop"
+    echo "✓ Removed legacy XDG autostart entry"
+fi
+if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
+    echo "Stopping legacy daemon instance..."
+    pkill -f "place-window.*watch.*daemon" || true
+    sleep 1
+fi
 
-chown "$REAL_USER:$REAL_USER" "$AUTOSTART_DIR/window-positioning.desktop" 2>/dev/null || true
-echo "✓ Installed XDG autostart service"
+# Enabling/starting needs the target user's manager, not root's;
+# user_systemctl bridges the gap when the installer runs under sudo.
+if user_systemctl show-environment >/dev/null 2>&1; then
+    if user_systemctl daemon-reload && \
+       user_systemctl enable --now window-positioning.service; then
+        echo "✓ Installed, enabled, and started systemd user unit (auto-restarts on failure)"
+    else
+        echo "⚠ Unit installed but enabling it failed. Enable it as ${REAL_USER} with:"
+        echo "    systemctl --user enable --now window-positioning.service"
+    fi
+else
+    echo "⚠ ${REAL_USER}'s systemd user manager is not reachable; unit installed but not enabled."
+    echo "  Enable it as ${REAL_USER} (while logged in) with:"
+    echo "    systemctl --user enable --now window-positioning.service"
+fi
 
 # Create uninstaller
 echo "Debug: Creating uninstaller at: $CONFIG_DIR/uninstall.sh"
@@ -320,15 +360,37 @@ if ! cat > "$CONFIG_DIR/uninstall.sh" << EOF
 
 echo "Removing window positioning tool..."
 
-# Stop daemon if running
+# Reach ${REAL_USER}'s systemd user manager even under sudo — root's own
+# environment points at root's runtime dir, so a plain \`systemctl --user\`
+# would silently no-op and leave the unit enabled after removal.
+user_systemctl() {
+    if [[ \$EUID -eq 0 ]]; then
+        runuser -u "${REAL_USER}" -- env \\
+            XDG_RUNTIME_DIR="/run/user/${REAL_UID}" \\
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${REAL_UID}/bus" \\
+            systemctl --user "\$@"
+    else
+        systemctl --user "\$@"
+    fi
+}
+
+# Stop and remove systemd user unit
+if user_systemctl list-unit-files window-positioning.service --no-legend 2>/dev/null | grep -q .; then
+    user_systemctl disable --now window-positioning.service 2>/dev/null || true
+fi
+rm -f "${REAL_HOME}/.config/systemd/user/window-positioning.service"
+user_systemctl daemon-reload 2>/dev/null || true
+echo "✓ Removed systemd user unit"
+
+# Stop any legacy nohup daemon if running
 if pgrep -f "place-window.*watch.*daemon" > /dev/null; then
     echo "Stopping window-positioning daemon..."
     pkill -f "place-window.*watch.*daemon"
 fi
 
-# Remove XDG autostart file
+# Remove legacy XDG autostart file if present
 rm -f "${REAL_HOME}/.config/autostart/window-positioning.desktop"
-echo "✓ Removed XDG autostart service"
+echo "✓ Removed autostart entries"
 
 sudo rm -f "${INSTALL_BIN_DIR}/place-window"
 echo "✓ Removed script from ${INSTALL_BIN_DIR}"
@@ -380,19 +442,21 @@ echo ""
 read -p "Install keyboard shortcuts? [Y/n]: " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-    if command -v xfconf-query &> /dev/null; then
-        # xfconf-query needs user's D-Bus session - works when script is run without sudo
-        # If running as root (via sudo), warn user to run without sudo
-        if [[ $EUID -eq 0 ]]; then
-            echo "⚠ Cannot install keyboard shortcuts when running as root"
-            echo "  xfconf-query needs your D-Bus session. Run installer without sudo,"
-            echo "  or add shortcuts manually via Settings > Keyboard > Application Shortcuts"
-        else
+    if ! command -v xfconf-query &> /dev/null; then
+        echo "⚠ xfconf-query not found, skipping keyboard shortcuts"
+        echo "  Add shortcuts manually - see $CONFIG_DIR/keyboard-shortcuts.txt"
+    # xfconf-query needs the user's D-Bus session; run_as_real_user supplies
+    # it under sudo. Probe once before writing 14 keys so a dead session
+    # produces one warning instead of aborting mid-way under set -e.
+    elif ! run_as_real_user xfconf-query -c xfce4-keyboard-shortcuts -l >/dev/null 2>&1; then
+        echo "⚠ Cannot reach ${REAL_USER}'s D-Bus session for xfconf-query."
+        echo "  Add shortcuts manually via Settings > Keyboard > Application Shortcuts"
+    else
             set_shortcut() {
                 local key="$1"
                 local cmd="$2"
-                xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$key" --reset 2>/dev/null || true
-                xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$key" -n -t string -s "$cmd"
+                run_as_real_user xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$key" --reset 2>/dev/null || true
+                run_as_real_user xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$key" -n -t string -s "$cmd"
             }
             echo "Installing keyboard shortcuts..."
             set_shortcut "<Super>1" "place-window minimize-others"
@@ -413,10 +477,6 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             set_shortcut "<Super>0" "place-window auto"
             set_shortcut "<Super>exclam" "place-window reapply"
             echo "✓ Keyboard shortcuts installed"
-        fi
-    else
-        echo "⚠ xfconf-query not found, skipping keyboard shortcuts"
-        echo "  Add shortcuts manually - see $CONFIG_DIR/keyboard-shortcuts.txt"
     fi
 else
     echo "✓ Skipped keyboard shortcuts (see $CONFIG_DIR/keyboard-shortcuts.txt)"
@@ -463,5 +523,6 @@ echo ""
 echo "Next steps:"
 echo "1. Test the tool: place-window"
 echo "2. Set up keyboard shortcuts (see $CONFIG_DIR/keyboard-shortcuts.txt)"
-echo "3. Enable auto-tiling daemon: place-window watch enable && place-window watch start"
+echo "3. The auto-tiling daemon is enabled and supervised by systemd"
+echo "   (auto-restarts on failure); check it with: place-window watch status"
 echo "4. Customize settings in $CONFIG_DIR/settings.conf"

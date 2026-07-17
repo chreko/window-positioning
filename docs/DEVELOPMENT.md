@@ -94,10 +94,10 @@ coordinate semantics**; picking the wrong one reintroduces per-window drift:
   WM ever matters, write a probe that performs a *non-zero-delta* move and
   observes whether the result lands at `+(L,T)`, `0`, or `-(L,T)`.
 
-`swap_window_geometries`, `cycle_window_positions`, and
-`reverse_cycle_window_positions` keep their inline manual `(L, T)`
-subtraction from `407b3e4` (equivalent to `_apply_frame_exact`, kept
-explicit to preserve that revert's narrative).
+`swap_window_geometries` and `cycle_window_positions` apply the `(L, T)`
+subtraction from `407b3e4` via `_apply_frame_exact` — the shared primitive
+is byte-for-byte the pattern that revert validated (extents read, subtract,
+forced NorthWest gravity), so the semantics are unchanged.
 
 ## Self-correcting applies
 
@@ -113,10 +113,8 @@ the retry corrects it with the by-then-real extents.
 
 This eliminates the visible 1-2 s reflow snap that the daemon's SIGUSR1-driven
 second pass produced previously: the second pass now happens inline, only
-when needed. The `trigger_daemon_reapply` calls in `auto_layout_and_reset_monitor`
-(`lib/layouts.sh`), `master_stack_layout_current_monitor` (`lib/daemon.sh`),
-and `center_master_layout_current_monitor` (`lib/daemon.sh`) are now redundant
-no-ops in steady state; they're left in place as belt-and-suspenders for now.
+when needed. (The `trigger_daemon_reapply` belt-and-suspenders calls that
+layout functions used to make have since been removed along with the helper.)
 
 Cap: exactly **one** retry. Toolkits with `WM_NORMAL_HINTS` size increments
 (xfce4-terminal, thunar, etc.) will always quantize the requested W/H by a few
@@ -133,7 +131,7 @@ goes permanently deaf — running but never re-tiling. The main loop in
 gap larger than `2 × SAFETY_TICK + 5` seconds can only mean the machine was
 suspended (an iteration is otherwise bounded by the read timeout plus
 processing). On detection it unconditionally restarts the event watcher,
-drops the monitor cache, clears `WINDOW_COUNT` (forcing every
+drops the monitor cache, clears `WINDOW_COUNT`/`WINDOW_IDS` (forcing every
 `(workspace, monitor)` dirty so the next reconcile reapplies), and clears
 stale holds/cooldowns from before the suspend.
 
@@ -193,7 +191,7 @@ the same bug.
 | `WATCH_AUTO_LAYOUT` from `settings.conf` wins on every daemon start | `lib/daemon.sh:watch_daemon_with_ipc` | Otherwise the runtime marker file silently overrode the user's authoritative config (commit `29444cf`). |
 | Per-`(workspace, monitor)` debounce, not a single global timer | `lib/daemon.sh:HOLD_UNTIL_MS` keyed by `key_wsmon` | A global timer let one monitor's apply block another monitor's pending apply for up to 30s (commit `a0286af`). |
 | Auto-start is XDG, not a systemd user unit | `~/.config/autostart/window-positioning.desktop` | XDG starts more reliably for X11 sessions; the systemd path was tried and removed. |
-| `IGNORED_APPS` is split via `read -ra`, not unquoted `arr=($var)` | `lib/windows.sh:get_visible_windows`, `lib/config.sh:validate_ignored_apps` | Unquoted glob expansion against the daemon's CWD silently dropped patterns whose name matched a real file (commit `c1fda77`). |
+| `IGNORED_APPS` is split via `read -ra`, not unquoted `arr=($var)` | `lib/config.sh:compile_ignored_patterns` | Unquoted glob expansion against the daemon's CWD silently dropped patterns whose name matched a real file (commit `c1fda77`). |
 | `clear_workspace_monitor_layout`, the four `reapply_saved_layout_for_monitor` branches, and `_NET_CURRENT_DESKTOP` transitions all log to fd 6 | `lib/daemon.sh`, `lib/config.sh`, `lib/layouts.sh` | Required to diagnose the open `master vertical 75` regression — see TODO.md (commit `5680872`). |
 | `IGNORED_APPS` patterns are compiled ONCE in `compile_ignored_patterns` and matched with bash `[[ =~ ]]` | `lib/config.sh`, `lib/windows.sh:get_visible_windows` | The old per-window inline compiler forked ~5 processes per pattern per window per call — the largest CPU cost on the daemon's hot path. Don't move compilation back into the window loop. |
 | `get_visible_windows` reads all per-window properties via ONE `xprop` call | `lib/windows.sh:get_visible_windows` | Was 4-5 xprop forks per window per call. Add new properties to the existing batched call, not as separate xprop invocations. |
@@ -201,7 +199,8 @@ the same bug.
 | Suspend watchdog: main-loop wall-clock gap check restarts the event watcher | `lib/daemon.sh:watch_daemon_with_ipc` | `kill -0` on the watcher subshell cannot detect a stale-but-alive `xprop -spy` after resume; the daemon went deaf until manually restarted. |
 | Every `wmctrl -e` passes gravity `1` (NorthWest), never `0` | `lib/windows.sh:_apply_frame_exact`, `swap_window_geometries`, cycle functions | Gravity `0` defers to the window's own hint; Static-gravity toolkits (kitty, Qt/Qube Manager) then land a title-bar height higher than GTK windows in the same layout. |
 | Position math uses `DECORATION_HEIGHT` (T); size math uses `DECORATION_HEIGHT + DECORATION_BOTTOM` (T+B) | `lib/windows.sh:apply_geometry` vs `lib/layouts.sh:init_layout_vars`, `lib/interactive.sh:apply_preset` | Conflating the two shifts windows (position with T+B) or squeezes bottom/inter-row gaps by B (size with T only). |
-| Only `_NET_ACTIVE_WINDOW` ticks are rate-limited (1/s via `PENDING_EVENT_TICK`, never silently dropped — pending ticks flush on a 1s read timeout); `_NET_CLIENT_LIST` and `_NET_CURRENT_DESKTOP` always tick immediately | `lib/daemon.sh:watch_daemon_with_ipc` | `_NET_ACTIVE_WINDOW` (watched to make minimize/restore event-driven) fires on every focus click; unlimited ticks would reintroduce the click-storm churn that got stacking events excluded (commit `a0286af`). Dropping instead of deferring would delay the trailing event up to 30s. Rate-limiting ALL events made a new window launched right after a click wait ~1s to tile (user-reported). |
+| Click-frequency atoms (`_NET_ACTIVE_WINDOW`, `_NET_CLIENT_LIST_STACKING`) are rate-limited (1/s via `event_is_rate_limited` + `PENDING_EVENT_TICK`, never silently dropped — pending ticks flush on a 1s read timeout); `_NET_CLIENT_LIST` and `_NET_CURRENT_DESKTOP` always tick immediately | `lib/daemon.sh:watch_daemon_with_ipc` | `_NET_ACTIVE_WINDOW` (watched to make minimize/restore event-driven) fires on every focus click; unlimited ticks would reintroduce the click-storm churn that originally got stacking events excluded (commit `a0286af`). Dropping instead of deferring would delay the trailing event up to 30s. Rate-limiting ALL events made a new window launched right after a click wait ~1s to tile (user-reported). |
+| `reconcile_ws_mon` compares the sorted window-ID set (`WINDOW_IDS`), not just the count; `_NET_CLIENT_LIST_STACKING` is back in the watched atoms | `lib/daemon.sh:reconcile_ws_mon`, `WATCHED_ROOT_ATOMS` | Workspace moves change no watched root atom except stacking (`_NET_WM_DESKTOP` is per-window), and a count-only compare missed any move with net-zero count change (swap two windows between desktops, move one in after another closed) — the moved window was never re-positioned on the destination workspace. Membership compare catches it on the next tick of that workspace; the stacking atom makes pager-drag moves (no focus change) tick at all. Covered by `test_daemon_reconcile.sh`. |
 
 ## When in doubt
 

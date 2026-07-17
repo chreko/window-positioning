@@ -9,7 +9,7 @@ This is a comprehensive window positioning and management tool designed specific
 ## Project Structure
 
 ### Core Components
-- **place-window**: Main executable script (382 lines) - modular command dispatcher
+- **place-window**: Main executable script - modular command dispatcher
 - **lib/**: Modular library architecture with focused components
   - **lib/config.sh**: Configuration management and workspace state
   - **lib/monitors.sh**: Multi-monitor detection and layout areas
@@ -17,7 +17,6 @@ This is a comprehensive window positioning and management tool designed specific
   - **lib/layouts.sh**: Meta-layout system with atomic layout functions
   - **lib/daemon.sh**: Watch mode daemon functionality
   - **lib/interactive.sh**: Interactive menu system and presets
-  - **lib/advanced.sh**: Master layouts, focus navigation, and window operations
 - **install.sh**: Installation script with dependency management and configuration setup
 - **README.md**: Complete user documentation and usage guide
 
@@ -38,32 +37,33 @@ This is a comprehensive window positioning and management tool designed specific
 ### Modular Architecture
 The project follows a clean modular design with separated concerns:
 
-#### Main Script (place-window, 382 lines)
+#### Main Script (place-window)
 - **Command Dispatcher**: Routes commands to appropriate library modules
 - **Module Imports**: Sources all library modules at startup
 - **Help System**: Comprehensive usage documentation and examples
 - **Error Handling**: Validates arguments and provides helpful error messages
 
-#### Configuration Module (lib/config.sh, 276 lines)
+#### Configuration Module (lib/config.sh)
 - **Config Files**: `~/.config/window-positioning/{settings.conf,presets.conf,workspace-*.conf}`
 - **Settings Management**: Gap size, panel height, auto-hide, decoration dimensions
 - **Workspace State**: Per-workspace and per-monitor layout preferences
 - **Auto-initialization**: Creates default configs if missing
 - **Settings Update**: Dynamic configuration changes with persistence
 
-#### Monitor Detection Module (lib/monitors.sh, 158 lines)
+#### Monitor Detection Module (lib/monitors.sh)
 - **Multi-Monitor Support**: Xrandr-based monitor detection and boundary calculation
 - **Layout Areas**: Per-monitor usable area calculation with gap/panel handling
 - **Primary Monitor**: Detection and panel space management
 - **Window-Monitor Mapping**: Determines which monitor contains each window
 
-#### Window Management Module (lib/windows.sh, 154 lines)
+#### Window Management Module (lib/windows.sh)
 - **Core Operations**: Window selection, geometry manipulation, workspace movement
 - **Position Management**: Save/load window positions to presets
 - **Window Discovery**: Spatial window ordering and visibility detection
 - **Geometry Utils**: Window sizing with minimum constraints
+- **Window Operations**: Minimize others, swap/rotate windows, simultaneous resize, focus navigation
 
-#### Layout System Module (lib/layouts.sh, 448 lines)
+#### Layout System Module (lib/layouts.sh)
 Meta-layout system with atomic layout functions:
 - `apply_meta_maximize_single_monitor()`: Single window maximization
 - `apply_meta_columns_single_monitor()`: Multi-column layouts
@@ -74,24 +74,17 @@ Meta-layout system with atomic layout functions:
 - `apply_meta_center_sidebar_single_monitor()`: Three-column center-focused layout
 - **Auto-Layout Engine**: Per-monitor layout coordination with preference system
 
-#### Daemon Module (lib/daemon.sh, 200 lines)
+#### Daemon Module (lib/daemon.sh)
 - **Watch Mode**: Background daemon for automatic window tiling
 - **Event Monitoring**: X11 property change detection for efficiency
 - **Process Management**: Daemon lifecycle control and status monitoring
 - **Layout Application**: Automatic layout triggering on window events
 
-#### Interactive Module (lib/interactive.sh, 164 lines)
+#### Interactive Module (lib/interactive.sh)
 - **Menu System**: User-friendly interactive mode with click-to-select
 - **Preset Application**: Quick positioning presets (ul, ur, left, right, etc.)
 - **Configuration UI**: Interactive gap and panel height adjustment
 - **Custom Positioning**: Manual coordinate entry and workspace movement
-
-#### Advanced Features Module (lib/advanced.sh, 508 lines)
-- **Simultaneous Resize**: Adjacent window detection and coordinated resizing
-- **Master-Stack Layouts**: Traditional tiling WM master/secondary arrangements
-- **Focus Navigation**: Directional window focus with spatial awareness
-- **Window Operations**: Minimize others, swap/rotate windows, position cycling
-- **Center Master**: Three-column layouts with configurable center width
 
 ### Multi-Monitor Architecture
 - **Per-Monitor Layouts**: Each monitor maintains independent window arrangements

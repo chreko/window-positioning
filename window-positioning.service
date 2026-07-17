@@ -1,0 +1,29 @@
+[Unit]
+Description=Window positioning tiling daemon
+# The daemon needs the X session; in dom0 the user manager starts at
+# first login, when lightdm has already brought X up on :0.
+# Backstop against a crash loop (e.g. X gone): 10 restarts per minute,
+# then the unit enters failed state instead of spinning.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/place-window watch daemon
+Restart=on-failure
+RestartSec=3
+Environment=DISPLAY=:0
+# No XAUTHORITY here on purpose: the systemd user manager does not
+# inherit the session's X cookie, and its location depends on the
+# display manager. The daemon resolves it dynamically at startup
+# (ensure_x_authority in lib/daemon.sh) by probing candidate cookie
+# paths until an X call succeeds, and exits 1 if none work so
+# Restart=on-failure retries until the X session is up.
+# Append — never truncate — so post-mortem evidence in daemon.log
+# survives restarts (the legacy nohup launcher truncated it, which
+# nearly destroyed the July 2026 crash investigation's evidence).
+StandardOutput=append:%h/.config/window-positioning/daemon.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

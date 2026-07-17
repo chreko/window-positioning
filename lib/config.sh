@@ -133,7 +133,6 @@ load_config() {
     
     # Ignored applications (comma-separated list) with fallback to defaults
     IGNORED_APPS=${IGNORED_APPS:-"About,ulauncher*,cs:Warning*,cs:Error*,cs:Password Required*,cs:Settings,cs:Select Power Mode,*Preferences,Application Finder,cs:Save As,cs:Save Changes,cs:Unlock Keyring,cs:xfce4-panel,xfce4-*-settings,xfce4-*-preferences,xfce4-settings-manager"}
-    validate_ignored_apps
     export IGNORED_APPS
     compile_ignored_patterns
 
@@ -213,41 +212,6 @@ matches_ignored_app() {
         fi
     done
     return 1
-}
-
-# Validate IGNORED_APPS syntax
-validate_ignored_apps() {
-    [[ -z "$IGNORED_APPS" ]] && return 0
-    
-    local apps=()
-    IFS=',' read -ra apps <<< "$IGNORED_APPS"
-    local errors=()
-    
-    for app in "${apps[@]}"; do
-        # Trim whitespace
-        app=$(echo "$app" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        [[ -z "$app" ]] && continue
-        
-        # Check for case-sensitive prefix
-        if [[ "$app" == cs:* ]]; then
-            app="${app#cs:}"
-        fi
-        
-        # Validate pattern characters
-        if echo "$app" | grep -q '[[\]'; then
-            errors+=("Invalid pattern '$app': Square brackets not supported")
-        fi
-    done
-    
-    if [[ ${#errors[@]} -gt 0 ]]; then
-        echo "IGNORED_APPS validation errors:" >&2
-        printf '%s\n' "${errors[@]}" >&2
-        echo "Using empty IGNORED_APPS due to errors" >&2
-        IGNORED_APPS=""
-        return 1
-    fi
-    
-    return 0
 }
 
 # Update a setting in the config file
@@ -330,50 +294,6 @@ auto_detect_decorations() {
     fi
 }
 
-# get_current_workspace() moved to windows.sh
-
-# Save workspace meta layout
-save_workspace_meta_layout() {
-    local workspace="$1"
-    local layout="$2"
-    local window_count="$3"
-    
-    # Use workspace-specific config file
-    local workspace_file="${CONFIG_DIR}/workspace-${workspace}-meta.conf"
-    
-    # Ensure it's a hash-style config
-    if [[ ! -f "$workspace_file" ]]; then
-        echo "# Workspace $workspace meta layout configuration" > "$workspace_file"
-    fi
-    
-    # Update or add the layout entry
-    if grep -q "^META_LAYOUT_${window_count}=" "$workspace_file"; then
-        sed -i "s/^META_LAYOUT_${window_count}=.*/META_LAYOUT_${window_count}=${layout}/" "$workspace_file"
-    else
-        echo "META_LAYOUT_${window_count}=${layout}" >> "$workspace_file"
-    fi
-}
-
-# Get workspace meta layout
-get_workspace_meta_layout() {
-    local workspace="$1"
-    local window_count="$2"
-    local default_layout="$3"
-    
-    local workspace_file="${CONFIG_DIR}/workspace-${workspace}-meta.conf"
-    
-    if [[ -f "$workspace_file" ]]; then
-        local saved_layout=$(grep "^META_LAYOUT_${window_count}=" "$workspace_file" 2>/dev/null | cut -d'=' -f2-)
-        if [[ -n "$saved_layout" ]]; then
-            echo "$saved_layout"
-            return
-        fi
-    fi
-    
-    # Fall back to default
-    echo "$default_layout"
-}
-
 # Save workspace monitor layout
 save_workspace_monitor_layout() {
     local workspace="$1" 
@@ -419,8 +339,6 @@ get_workspace_monitor_layout() {
     # Fall back to default
     echo "$default_layout"
 }
-
-# Window ID persistence removed - only layout preferences should be saved
 
 # Clear workspace monitor layout
 clear_workspace_monitor_layout() {

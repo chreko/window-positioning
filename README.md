@@ -111,7 +111,8 @@ AUTO_LAYOUT_5=grid-wide-bottom
 - **5 windows:** center-corners, two-three-columns, grid-wide-bottom
 
 ### Watch Mode (Automatic Tiling Daemon)
-The watch mode runs as an XDG autostart application for seamless desktop integration:
+The watch mode runs as a systemd user service (`window-positioning.service`),
+supervised with `Restart=on-failure` and started automatically at login:
 
 ```bash
 # Daemon control via place-window wrapper
@@ -125,10 +126,10 @@ place-window watch logs         # View daemon logs
 ```
 
 **Features:**
-- **XDG Autostart Integration**: Seamlessly integrates with desktop environment startup
+- **Systemd Supervision**: starts at login, auto-restarts on failure, clean process-group shutdown
 - **Event-driven**: Efficient X11 property monitoring (not polling)
 - **Resource Efficient**: Uses only 3-4 background processes
-- **Auto-restart**: Automatically restarts on crashes
+- **Persistent Logs**: daemon.log is appended, never truncated, across restarts
 - **Persistent**: Can survive logout/login sessions
 - **Workspace Aware**: Only processes windows on current workspace
 - **Multi-monitor Support**: Per-monitor layout management
