@@ -77,27 +77,20 @@ get_primary_monitor() {
 }
 
 
-# Get which monitor a window is primarily on
-get_window_monitor() {
-    local window_id="$1"
+# Best-overlap monitor for a geometry, returned via MONITOR_MATCH
+# ("name:x:y:w:h", or empty if no overlap). Var-return keeps it fork-free on
+# the daemon's per-window hot path (get_visible_windows calls it with the
+# geometry wmctrl -lG already provided).
+monitor_for_geometry() {  # args: x y w h
+    local wx="$1" wy="$2" ww="$3" wh="$4"
+    MONITOR_MATCH=""
 
     # IMPORTANT: Must ensure MONITORS array is populated before using it
     if [[ ${#MONITORS[@]} -eq 0 ]]; then
         get_screen_info
     fi
 
-    local geom=$(get_window_geometry "$window_id")
-    IFS=',' read -r wx wy ww wh <<< "$geom"
-
-    # Check if we got valid geometry
-    if [[ -z "$geom" || "$wx" == "" || "$wy" == "" ]]; then
-        echo ""  # Return empty string for invalid geometry
-        return 1
-    fi
-
-    local best_monitor=""
-    local best_overlap=0
-
+    local monitor best_overlap=0
     for monitor in "${MONITORS[@]}"; do
         IFS=':' read -r name mx my mw mh <<< "$monitor"
 
@@ -111,19 +104,35 @@ get_window_monitor() {
             local overlap_area=$(((overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)))
             if [[ $overlap_area -gt $best_overlap ]]; then
                 best_overlap=$overlap_area
-                best_monitor="$monitor"
+                MONITOR_MATCH="$monitor"
             fi
         fi
     done
+}
 
-    # If no overlap found, return empty instead of defaulting to primary monitor
-    # This prevents incorrect assignment during daemon startup
-    if [[ -z "$best_monitor" ]]; then
-        echo ""  # Return empty string instead of defaulting to primary monitor
+# Get which monitor a window is primarily on
+get_window_monitor() {
+    local window_id="$1"
+
+    local geom=$(get_window_geometry "$window_id")
+    IFS=',' read -r wx wy ww wh <<< "$geom"
+
+    # Check if we got valid geometry
+    if [[ -z "$geom" || "$wx" == "" || "$wy" == "" ]]; then
+        echo ""  # Return empty string for invalid geometry
         return 1
     fi
 
-    echo "$best_monitor"
+    monitor_for_geometry "$wx" "$wy" "$ww" "$wh"
+
+    # If no overlap found, return empty instead of defaulting to primary monitor
+    # This prevents incorrect assignment during daemon startup
+    if [[ -z "$MONITOR_MATCH" ]]; then
+        echo ""
+        return 1
+    fi
+
+    echo "$MONITOR_MATCH"
 }
 
 # Global cache variables for panel detection
@@ -133,7 +142,7 @@ PANEL_CACHE_DURATION=300  # Cache for 5 minutes
 
 # Detect all XFCE panels and their properties (with caching)
 detect_xfce_panels() {
-    local current_time=$(date +%s)
+    local current_time=$EPOCHSECONDS
     local cache_age=$((current_time - CACHED_PANELS_TIMESTAMP))
 
     # Return cached results if cache is still valid

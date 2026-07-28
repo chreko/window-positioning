@@ -179,7 +179,7 @@ called from `auto_layout_and_reset_monitor` in `lib/layouts.sh`.
 
 ## Don't-undo list
 
-The following decisions are load-bearing — they were made deliberately
+The following decisions must not be undone — they were made deliberately
 after a specific incident. Re-litigating them silently will reintroduce
 the same bug.
 
@@ -189,12 +189,13 @@ the same bug.
 | IPC responses end with `__DAEMON_RESP_END__` sentinel | `lib/daemon.sh:watch_daemon_with_ipc`, `send_daemon_command` | Without it, clients didn't know when to stop reading multi-line responses (commit `ed5766b`). |
 | `set -e` is OFF in the long-running daemon | `lib/daemon.sh` top | A trivial `grep` returning 1 would otherwise kill the daemon mid-tick (commit `886c867`). |
 | `WATCH_AUTO_LAYOUT` from `settings.conf` wins on every daemon start | `lib/daemon.sh:watch_daemon_with_ipc` | Otherwise the runtime marker file silently overrode the user's authoritative config (commit `29444cf`). |
-| Per-`(workspace, monitor)` debounce, not a single global timer | `lib/daemon.sh:HOLD_UNTIL_MS` keyed by `key_wsmon` | A global timer let one monitor's apply block another monitor's pending apply for up to 30s (commit `a0286af`). |
+| Per-`(workspace, monitor)` debounce, not a single global timer | `lib/daemon.sh:HOLD_UNTIL_MS` keyed `workspace_<ws>_monitor_<mon>` | A global timer let one monitor's apply block another monitor's pending apply for up to 30s (commit `a0286af`). |
 | Auto-start is XDG, not a systemd user unit | `~/.config/autostart/window-positioning.desktop` | XDG starts more reliably for X11 sessions; the systemd path was tried and removed. |
 | `IGNORED_APPS` is split via `read -ra`, not unquoted `arr=($var)` | `lib/config.sh:compile_ignored_patterns` | Unquoted glob expansion against the daemon's CWD silently dropped patterns whose name matched a real file (commit `c1fda77`). |
 | `clear_workspace_monitor_layout`, the four `reapply_saved_layout_for_monitor` branches, and `_NET_CURRENT_DESKTOP` transitions all log to fd 6 | `lib/daemon.sh`, `lib/config.sh`, `lib/layouts.sh` | Required to diagnose the open `master vertical 75` regression — see TODO.md (commit `5680872`). |
 | `IGNORED_APPS` patterns are compiled ONCE in `compile_ignored_patterns` and matched with bash `[[ =~ ]]` | `lib/config.sh`, `lib/windows.sh:get_visible_windows` | The old per-window inline compiler forked ~5 processes per pattern per window per call — the largest CPU cost on the daemon's hot path. Don't move compilation back into the window loop. |
 | `get_visible_windows` reads all per-window properties via ONE `xprop` call | `lib/windows.sh:get_visible_windows` | Was 4-5 xprop forks per window per call. Add new properties to the existing batched call, not as separate xprop invocations. |
+| `get_visible_windows` lists via `wmctrl -lG` and matches monitors in pure bash (`monitor_for_geometry`, var-return) | `lib/windows.sh:get_visible_windows`, `lib/monitors.sh:monitor_for_geometry` | The old per-window `get_window_monitor \| cut` filter forked xwininfo+awk+cut for every window on every tick. Geometry comes free in the listing call; don't reintroduce per-window geometry reads here. |
 | `apply_geometry` = layout semantics (`y + DECORATION_HEIGHT`); `apply_geom_adaptive` = absolute frame position | `lib/windows.sh` | Layout math is tuned to the historical landing of standard xfwm4 windows; round-trip callers need exact landing. Mixing them up reintroduces the per-window title-bar drift (user-visible dom0-vs-AppVM misalignment). |
 | Suspend watchdog: main-loop wall-clock gap check restarts the event watcher | `lib/daemon.sh:watch_daemon_with_ipc` | `kill -0` on the watcher subshell cannot detect a stale-but-alive `xprop -spy` after resume; the daemon went deaf until manually restarted. |
 | Every `wmctrl -e` passes gravity `1` (NorthWest), never `0` | `lib/windows.sh:_apply_frame_exact`, `swap_window_geometries`, cycle functions | Gravity `0` defers to the window's own hint; Static-gravity toolkits (kitty, Qt/Qube Manager) then land a title-bar height higher than GTK windows in the same layout. |

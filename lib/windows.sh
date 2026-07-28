@@ -39,16 +39,30 @@ get_window_geometry() {
 
 # --- Read CLIENT geometry consistently as x,y,w,h ---
 get_window_client_geometry() {
-    local id="$1"
-    local info x y w h L R T B
-    info=$(xwininfo -id "$id")
-    x=$(awk '/Absolute upper-left X:/ {print $NF}' <<<"$info")
-    y=$(awk '/Absolute upper-left Y:/ {print $NF}' <<<"$info")
-    w=$(awk '/Width:/ {print $NF}' <<<"$info")
-    h=$(awk '/Height:/ {print $NF}' <<<"$info")
-    IFS=',' read -r L R T B <<<"$(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null | awk -F' = ' '{print $2}' | sed 's/, /,/g')"
-    [[ -z "$L" ]] && L=0 R=0 T=0 B=0
-    echo "$((x + L)),$((y + T)),$w,$h"
+    local id="$1" x y w h L T
+    read -r x y w h < <(xwininfo -id "$id" | awk '
+        /Absolute upper-left X:/ {x=$NF}
+        /Absolute upper-left Y:/ {y=$NF}
+        /Width:/ {w=$NF}
+        /Height:/ {h=$NF}
+        END {print x, y, w, h}')
+    _read_frame_extents_lt "$id"
+    echo "$((x + FRAME_L)),$((y + FRAME_T)),$w,$h"
+}
+
+# Parse _NET_FRAME_EXTENTS (L, R, T, B) into FRAME_L / FRAME_T — the only two
+# values any caller uses. Var-return with a pure-bash parse: the old awk|sed
+# pipeline plus command substitution forked 3 extra processes per window per
+# apply on the daemon's hot path; now only the (mandatory, fresh-per-call)
+# xprop itself forks. Missing property (fresh window) yields 0 0, as before.
+_read_frame_extents_lt() {
+    local ext
+    ext=$(xprop -id "$1" _NET_FRAME_EXTENTS 2>/dev/null)
+    if [[ "$ext" =~ =\ ([0-9]+),\ [0-9]+,\ ([0-9]+), ]]; then
+        FRAME_L=${BASH_REMATCH[1]} FRAME_T=${BASH_REMATCH[2]}
+    else
+        FRAME_L=0 FRAME_T=0
+    fi
 }
 
 # ----- Stable geometry helpers (wmctrl) -----
@@ -77,11 +91,8 @@ get_window_frame_geometry_wmctrl() {
 # of what its toolkit asked for.
 _apply_frame_exact() {  # id fx fy w h
     local id="$1" fx="$2" fy="$3" w="$4" h="$5"
-    local L R T B
-    read -r L R T B < <(xprop -id "$id" _NET_FRAME_EXTENTS 2>/dev/null \
-                       | awk -F' = ' '{print $2}' | sed 's/, / /g')
-    : "${L:=0}"; : "${T:=0}"
-    wmctrl -i -r "$id" -e "1,$((fx - L)),$((fy - T)),${w},${h}" 2>/dev/null
+    _read_frame_extents_lt "$id"
+    wmctrl -i -r "$id" -e "1,$((fx - FRAME_L)),$((fy - FRAME_T)),${w},${h}" 2>/dev/null
 }
 
 # Place a window's frame at an ABSOLUTE xwininfo position (fx, fy), with
@@ -116,12 +127,17 @@ apply_geom_adaptive() {  # id targetFrameX targetFrameY width height
 wait_window_settled() {
     local id="$1"
     local prev="" stable=0
-    local deadline=$(( $(date +%s%3N) + 250 ))
+    # $EPOCHREALTIME (µs after stripping the radix char, which is
+    # locale-dependent) instead of $(date +%s%3N): the old form forked date
+    # once per 20 ms poll.
+    local deadline=$(( ${EPOCHREALTIME/[.,]/} + 250000 ))
 
-    while (( $(date +%s%3N) < deadline )); do
+    while (( ${EPOCHREALTIME/[.,]/} < deadline )); do
+        # Compare the raw --shell output: field order is fixed, and the
+        # constant WINDOW=/SCREEN= lines compare equal anyway — the old
+        # grep|sort filter cost 2 forks per poll for nothing.
         local cur
-        cur=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null \
-              | grep -E '^(X|Y|WIDTH|HEIGHT)=' | sort)
+        cur=$(xdotool getwindowgeometry --shell "$id" 2>/dev/null)
         if [[ -n "$cur" && "$cur" == "$prev" ]]; then
             stable=$((stable + 1))
             (( stable >= 2 )) && return 0
@@ -228,8 +244,12 @@ get_visible_windows() {
     # and a stale-workspace lookup ends up applying to fresh-workspace windows.
     local workspace_override="${2:-}"
     local current_desktop="${workspace_override:-$(xdotool get_desktop)}"
-    
-    wmctrl -l | while read -r id desktop _; do
+
+    # -lG: geometry comes free in the listing call we already make, so the
+    # monitor filter below matches in pure bash — the old per-window
+    # get_window_monitor call forked xwininfo+awk+cut for every window on
+    # every daemon tick, the largest remaining fork cost on the hot path.
+    wmctrl -lG | while read -r id desktop wx wy ww wh _; do
         # Skip windows not on current desktop
         [[ "$desktop" != "$current_desktop" && "$desktop" != "-1" ]] && continue
 
@@ -274,11 +294,14 @@ get_visible_windows() {
             matches_ignored_app "$class" "$title" && continue
         fi
 
-        # If monitor specified, check if window is on that monitor
+        # If monitor specified, check if window is on that monitor.
+        # wmctrl -lG positions are xwininfo-space (same as get_window_monitor
+        # read via xwininfo); the few-px frame-size difference can never flip
+        # the best-overlap monitor. Empty MONITOR_MATCH = detection failed —
+        # skip, as before.
         if [[ -n "$monitor_name" ]]; then
-            local window_mon=$(get_window_monitor "$id" 2>/dev/null | cut -d: -f1)
-            # Skip windows where monitor detection failed (empty result)
-            [[ -z "$window_mon" || "$window_mon" != "$monitor_name" ]] && continue
+            monitor_for_geometry "$wx" "$wy" "$ww" "$wh"
+            [[ "${MONITOR_MATCH%%:*}" != "$monitor_name" ]] && continue
         fi
 
         echo "$id"
@@ -365,9 +388,10 @@ get_visible_windows_by_stacking() {
 # WINDOW OPERATIONS
 #========================================
 
-# Get current workspace
+# Get current workspace (single fork; the old wmctrl -d | grep | cut
+# pipeline forked 3 — this runs on every daemon tick)
 get_current_workspace() {
-    wmctrl -d | grep '*' | cut -d' ' -f1
+    xdotool get_desktop
 }
 
 

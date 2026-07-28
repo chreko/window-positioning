@@ -76,39 +76,43 @@ event_is_rate_limited() {  # arg: raw tagged event line
     esac
 }
 
+# Milliseconds since epoch without forking date: $EPOCHREALTIME is
+# "seconds<radix>microseconds" (radix char is locale-dependent — strip
+# either), so dropping the radix and dividing by 1000 gives ms.
+now_ms() { NOW_MS=$(( ${EPOCHREALTIME/[.,]/} / 1000 )); }
+
 hold_now() {  # ws mon_name [ms]
   local ws="$1" mon="$2" ms="${3:-900}"
-  local now; now=$(date +%s%3N)
+  now_ms
   local k="workspace_${ws}_monitor_${mon}"
-  HOLD_UNTIL_MS["$k"]=$(( now + ms ))
+  HOLD_UNTIL_MS["$k"]=$(( NOW_MS + ms ))
 }
 
 should_hold() {  # ws mon_name
-  local ws="$1" mon="$2" now k
-  now=$(date +%s%3N)
+  local ws="$1" mon="$2" k
+  now_ms
   k="workspace_${ws}_monitor_${mon}"
-  [[ ${HOLD_UNTIL_MS["$k"]-0} -gt $now ]]
+  [[ ${HOLD_UNTIL_MS["$k"]-0} -gt $NOW_MS ]]
 }
 
-# Key helper matching windows.sh format for daemon maps
-key_wsmon() {  # args: workspace monitor_name
-  printf "workspace_%s_monitor_%s" "$1" "$2"
-}
+# Daemon maps are keyed "workspace_<ws>_monitor_<mon>", built inline at each
+# site — a $(helper) command substitution would fork on the tick path.
 
 # Cooldown helpers (monitor uses these even before watch loop starts)
 : "${COOLDOWN_UNTIL_MS:=0}"
 cooldown_now() {                # args: [ms]
-  local ms="${1:-600}" now; now=$(date +%s%3N)
-  COOLDOWN_UNTIL_MS=$(( now + ms ))
+  local ms="${1:-600}"
+  now_ms
+  COOLDOWN_UNTIL_MS=$(( NOW_MS + ms ))
 }
 monitor_should_apply() {
-  local now; now=$(date +%s%3N)
-  (( now >= COOLDOWN_UNTIL_MS ))
+  now_ms
+  (( NOW_MS >= COOLDOWN_UNTIL_MS ))
 }
 
 # Cached screen info for CPU optimization - monitors rarely change
 get_screen_info_cached() {
-    local now=$(date +%s)
+    local now=$EPOCHSECONDS
     if (( ${#SCREEN_INFO_CACHE[@]} == 0 )) || (( now - SCREEN_INFO_CACHE_TIME > 30 )); then
         get_screen_info  # Calls original function from monitors.sh
         SCREEN_INFO_CACHE=("${MONITORS[@]}")
@@ -405,7 +409,7 @@ watch_daemon_with_ipc() {
     # goes permanently deaf. Detect the gap, restart the watcher
     # unconditionally, drop caches, and force a full reconcile.
     local LAST_LOOP_TS
-    LAST_LOOP_TS=$(date +%s)
+    LAST_LOOP_TS=$EPOCHSECONDS
     # Event-tick rate limit: _NET_ACTIVE_WINDOW fires on every focus click,
     # so cap event-driven reconciles at one per second. A rate-limited event
     # sets PENDING_EVENT_TICK instead of being dropped; the read timeout
@@ -415,7 +419,7 @@ watch_daemon_with_ipc() {
     local LAST_EVENT_TICK_TS=0 PENDING_EVENT_TICK=0
     while true; do
         local _now_ts
-        _now_ts=$(date +%s)
+        _now_ts=$EPOCHSECONDS
         if (( _now_ts - LAST_LOOP_TS > SAFETY_TICK * 2 + 5 )); then
             echo "$(date): wall-clock gap of $((_now_ts - LAST_LOOP_TS))s detected — assuming suspend/resume; restarting event watcher"
             stop_event_watcher
@@ -572,17 +576,16 @@ show_daemon_status() {
 # always do the real comparison.
 reconcile_ws_mon() {  # args: workspace monitor_name
     local ws="$1" mon="$2"
-    local k; k="$(key_wsmon "$ws" "$mon")"
+    local k="workspace_${ws}_monitor_${mon}"
 
     # Membership count only — use the unordered list. get_windows_ordered's
     # spatial sort reads per-window geometry (one xwininfo+xprop per window)
     # that a count can never use. Same filter, same membership, fewer forks.
     local current_windows
     current_windows="$(get_visible_windows "$mon" "$ws")"
-    local current_count=0
-    if [[ -n "$current_windows" ]]; then
-        current_count=$(printf '%s\n' "$current_windows" | grep -c .)
-    fi
+    local -a _cur=()
+    [[ -n "$current_windows" ]] && mapfile -t _cur <<< "$current_windows"
+    local current_count=${#_cur[@]}
 
     # Compare MEMBERSHIP, not just count. A window moved in from another
     # workspace while one left (swap-rearrange via the pager), or moved in
@@ -637,12 +640,12 @@ monitor_tick() {
 
         reconcile_ws_mon "$ws" "$monitor_name"
 
-        k="$(key_wsmon "$ws" "$monitor_name")"
+        k="workspace_${ws}_monitor_${monitor_name}"
         local dirty="${WINDOW_DIRTY["$k"]-0}"
         if is_auto_layout_enabled && [[ "$dirty" -eq 1 ]] && monitor_should_apply; then
             # Per-monitor debounce: if THIS monitor was just applied, skip until
             # DEBOUNCE_DELAY elapses. Other monitors are unaffected.
-            local now=$(date +%s)
+            local now=$EPOCHSECONDS
             local last="${LAST_CHANGE_TIME["$k"]-0}"
             local time_since_last_change=$((now - last))
 
@@ -682,10 +685,10 @@ send_daemon_command() {
     # commands routinely timed out and orphaned their responses in the
     # pipe — feeding the pipe-fill failure mode drained above.
     local response="" line got_response=0
-    local deadline=$(( $(date +%s) + 15 ))
+    local deadline=$(( EPOCHSECONDS + 15 ))
 
     exec 5<"$DAEMON_RESP_PIPE"
-    while (( $(date +%s) < deadline )); do
+    while (( EPOCHSECONDS < deadline )); do
         if IFS= read -r -t 1 line <&5; then
             if [[ "$line" == "__DAEMON_RESP_END__" ]]; then
                 got_response=1
