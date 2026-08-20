@@ -299,11 +299,11 @@ Key: Shift+Super+2
 Description: Master-stack with master on right (75/25 split)
 
 Command: place-window master fibonacci
-Key: Super+Shift+F
+Key: Super+5
 Description: Fibonacci spiral tiling (each window halves the remainder)
 
 Command: place-window master dwindle
-Key: Super+Shift+D
+Key: Super+6
 Description: Fibonacci tiling into the bottom-right corner
 
 Command: place-window watch toggle
@@ -440,7 +440,7 @@ fi
 # Install keyboard shortcuts (optional)
 echo ""
 echo "Would you like to install keyboard shortcuts for window positioning?"
-echo "  Super+1-4    : Window layouts"
+echo "  Super+1-6    : Window layouts (5/6 = fibonacci spiral/dwindle)"
 echo "  Super+Up/Down: Cycle windows"
 echo "  Super+Left/Right: Adjust master size"
 echo "  Super+w      : Toggle watch mode"
@@ -454,7 +454,7 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         echo "⚠ xfconf-query not found, skipping keyboard shortcuts"
         echo "  Add shortcuts manually - see $CONFIG_DIR/keyboard-shortcuts.txt"
     # xfconf-query needs the user's D-Bus session; run_as_real_user supplies
-    # it under sudo. Probe once before writing 14 keys so a dead session
+    # it under sudo. Probe once before writing 16 keys so a dead session
     # produces one warning instead of aborting mid-way under set -e.
     elif ! run_as_real_user xfconf-query -c xfce4-keyboard-shortcuts -l >/dev/null 2>&1; then
         echo "⚠ Cannot reach ${REAL_USER}'s D-Bus session for xfconf-query."
@@ -476,6 +476,8 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             set_shortcut "<Shift><Super>at" "place-window master vertical-right 75"
             set_shortcut "<Super>3" "place-window master center"
             set_shortcut "<Super>4" "place-window master horizontal 50"
+            set_shortcut "<Super>5" "place-window master fibonacci"
+            set_shortcut "<Super>6" "place-window master dwindle"
             set_shortcut "<Super>Up" "place-window cycle"
             set_shortcut "<Super>Down" "place-window cycle counter-clockwise"
             set_shortcut "<Super>Left" "place-window master decrease"
