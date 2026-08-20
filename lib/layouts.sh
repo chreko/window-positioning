@@ -367,7 +367,11 @@ apply_meta_center_sidebar_single_monitor() {
 # variants differ only in which side the placed window takes:
 #
 #   spiral  - the taken side rotates left -> top -> right -> bottom, winding
-#             the windows counter-clockwise inward
+#             the windows counter-clockwise inward. `fibonacci` is the name the
+#             CLI, the daemon command and the saved layout string use for it,
+#             and it arrives here untranslated, so anything that is not
+#             `dwindle` spirals. Defaulting the other way silently turned every
+#             `place-window master fibonacci` into a dwindle.
 #   dwindle - the taken side is always left or top, so the leftover marches
 #             into the bottom-right corner
 #
@@ -426,7 +430,7 @@ apply_meta_fibonacci_single_monitor() {
             # Spiral takes the right side on every second vertical split, which
             # is what turns the dwindle staircase into a wind. Taking the right
             # leaves the remainder on the left, so box_x stays put.
-            if [[ "$variant" == "spiral" ]] && (( i % 4 == 2 )); then
+            if [[ "$variant" != "dwindle" ]] && (( i % 4 == 2 )); then
                 apply_geometry "${window_list[i]}" $((box_x + rest_w + gap_h)) "$box_y" "$win_w" "$box_h"
             else
                 apply_geometry "${window_list[i]}" "$box_x" "$box_y" "$win_w" "$box_h"
@@ -444,7 +448,7 @@ apply_meta_fibonacci_single_monitor() {
             fi
 
             # Spiral takes the bottom on every second horizontal split
-            if [[ "$variant" == "spiral" ]] && (( i % 4 == 3 )); then
+            if [[ "$variant" != "dwindle" ]] && (( i % 4 == 3 )); then
                 apply_geometry "${window_list[i]}" "$box_x" $((box_y + rest_h + gap_v)) "$box_w" "$win_h"
             else
                 apply_geometry "${window_list[i]}" "$box_x" "$box_y" "$box_w" "$win_h"

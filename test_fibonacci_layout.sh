@@ -118,6 +118,22 @@ check "dwindle: window 4 at the top, window 5 below it" \
       "$(run_layout dwindle 50 5)"
 
 echo
+echo "=== the name the command line uses ==="
+
+# `fibonacci` is what the CLI, the daemon command and the saved layout string
+# all call this layout; `spiral` is the engine's internal name for the same
+# thing. The engine must answer to both, or `place-window master fibonacci`
+# silently lays out a dwindle -- the variant name is carried untranslated from
+# `place-window master $2` all the way down to $variant here.
+check "fibonacci produces the same tiles as spiral" \
+      "$(run_layout spiral 50 5)" \
+      "$(run_layout fibonacci 50 5)"
+
+check "fibonacci does not produce dwindle's tiles" \
+      "differs" \
+      "$([[ "$(run_layout fibonacci 50 5)" == "$(run_layout dwindle 50 5)" ]] && echo same || echo differs)"
+
+echo
 echo "=== split ratio ==="
 
 # 62% approximates the golden ratio, the ratio that makes the tiles trace an
