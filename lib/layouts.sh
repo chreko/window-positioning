@@ -361,6 +361,122 @@ apply_meta_center_sidebar_single_monitor() {
     fi
 }
 
+# Fibonacci layout for one monitor: each window takes `ratio` percent of what
+# is left, and the split axis alternates, so the tiles halve inward. This is
+# dwm's fibonacci patch (https://dwm.suckless.org/patches/fibonacci/); the two
+# variants differ only in which side the placed window takes:
+#
+#   spiral  - the taken side rotates left -> top -> right -> bottom, winding
+#             the windows counter-clockwise inward
+#   dwindle - the taken side is always left or top, so the leftover marches
+#             into the bottom-right corner
+#
+# `ratio` reuses the master percentage: 50 halves like dwm, 62 approximates the
+# golden ratio and makes the tiles trace an actual Fibonacci spiral.
+#
+# $1 monitor, $2 variant (spiral|dwindle), $3 ratio percent, $@... window IDs
+apply_meta_fibonacci_single_monitor() {
+    local monitor="$1"
+    local variant="$2"
+    local ratio="${3:-50}"
+    shift 3
+    local window_list=("$@")
+
+    local layout_area usable_x usable_y usable_w usable_h
+    local gap decoration_h decoration_w final_x final_y final_w final_h
+    init_layout_vars "$monitor"
+
+    local num_windows=${#window_list[@]}
+
+    if [[ $num_windows -eq 1 ]]; then
+        apply_meta_maximize_single_monitor "$monitor" "${window_list[@]}"
+        return
+    fi
+
+    # Tile separation per axis, same budget the other engines use
+    local gap_h=$((gap + decoration_w))
+    local gap_v=$((gap + decoration_h))
+
+    # Halving runs out of room quickly: a few splits past this floor the tiles
+    # are narrower than their own title bar, and a few more after that the
+    # arithmetic goes negative and wmctrl starts erroring. Below the floor the
+    # spiral stops and the windows still waiting share the leftover box.
+    # Skewed ratios reach it sooner, so it is configurable in settings.conf.
+    local min_tile=${FIBONACCI_MIN_TILE:-100}
+
+    local box_x=$final_x box_y=$final_y box_w=$final_w box_h=$final_h
+    local i
+    for ((i = 0; i < num_windows; i++)); do
+        # Last window inherits whatever is left
+        if (( i == num_windows - 1 )); then
+            apply_geometry "${window_list[i]}" "$box_x" "$box_y" "$box_w" "$box_h"
+            return
+        fi
+
+        if (( i % 2 == 0 )); then
+            # Vertical split: the two tiles sit side by side
+            local avail=$((box_w - gap_h))
+            local win_w=$((avail * ratio / 100))
+            local rest_w=$((avail - win_w))
+
+            if (( win_w < min_tile || rest_w < min_tile )); then
+                break
+            fi
+
+            # Spiral takes the right side on every second vertical split, which
+            # is what turns the dwindle staircase into a wind. Taking the right
+            # leaves the remainder on the left, so box_x stays put.
+            if [[ "$variant" == "spiral" ]] && (( i % 4 == 2 )); then
+                apply_geometry "${window_list[i]}" $((box_x + rest_w + gap_h)) "$box_y" "$win_w" "$box_h"
+            else
+                apply_geometry "${window_list[i]}" "$box_x" "$box_y" "$win_w" "$box_h"
+                box_x=$((box_x + win_w + gap_h))
+            fi
+            box_w=$rest_w
+        else
+            # Horizontal split: the two tiles stack
+            local avail=$((box_h - gap_v))
+            local win_h=$((avail * ratio / 100))
+            local rest_h=$((avail - win_h))
+
+            if (( win_h < min_tile || rest_h < min_tile )); then
+                break
+            fi
+
+            # Spiral takes the bottom on every second horizontal split
+            if [[ "$variant" == "spiral" ]] && (( i % 4 == 3 )); then
+                apply_geometry "${window_list[i]}" "$box_x" $((box_y + rest_h + gap_v)) "$box_w" "$win_h"
+            else
+                apply_geometry "${window_list[i]}" "$box_x" "$box_y" "$box_w" "$win_h"
+                box_y=$((box_y + win_h + gap_v))
+            fi
+            box_h=$rest_h
+        fi
+    done
+
+    # Out of room: the windows still waiting share the leftover box, split
+    # along its longer axis so they stay as square as the box allows.
+    local remaining=("${window_list[@]:i}")
+    local count=${#remaining[@]}
+    local sizes=() j
+
+    if (( box_w >= box_h )); then
+        split_strip "$box_w" "$count" "$gap_h" sizes
+        local x=$box_x
+        for ((j = 0; j < count; j++)); do
+            apply_geometry "${remaining[j]}" "$x" "$box_y" "${sizes[j]}" "$box_h"
+            x=$((x + sizes[j] + gap_h))
+        done
+    else
+        split_strip "$box_h" "$count" "$gap_v" sizes
+        local y=$box_y
+        for ((j = 0; j < count; j++)); do
+            apply_geometry "${remaining[j]}" "$box_x" "$y" "$box_w" "${sizes[j]}"
+            y=$((y + sizes[j] + gap_v))
+        done
+    fi
+}
+
 #========================================
 # AUTO-LAYOUT DISPATCHERS
 #========================================
@@ -490,6 +606,9 @@ reapply_saved_layout_for_monitor() {
                         ;;
                     vertical-right)
                         apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" right "${master_windows[@]}"
+                        ;;
+                    fibonacci|dwindle)
+                        apply_meta_fibonacci_single_monitor "$monitor" "$orientation" "${percentage:-50}" "${master_windows[@]}"
                         ;;
                     *)
                         apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"

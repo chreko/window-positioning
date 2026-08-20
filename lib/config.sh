@@ -32,6 +32,13 @@ PANEL_AUTOHIDE=false
 MIN_WIDTH=400
 MIN_HEIGHT=300
 
+# Smallest tile the fibonacci layouts will split down to, in pixels.
+# Halving runs out of room fast, and a few splits past this floor the tiles
+# are narrower than their own title bar. Below it the spiral stops and the
+# windows still waiting share the leftover box evenly. Lower it for deeper
+# spirals; skewed ratios (70/30 and friends) hit it sooner than 50/50 does.
+FIBONACCI_MIN_TILE=100
+
 # Auto-layout preferences
 # Available layouts for each window count:
 # 1 window: maximize
@@ -115,6 +122,7 @@ load_config() {
     PANEL_AUTOHIDE=${PANEL_AUTOHIDE:-false}
     MIN_WIDTH=${MIN_WIDTH:-400}
     MIN_HEIGHT=${MIN_HEIGHT:-300}
+    FIBONACCI_MIN_TILE=${FIBONACCI_MIN_TILE:-100}
     
     # Window decoration dimensions - configurable via settings.
     # DECORATION_HEIGHT is the title bar (T in _NET_FRAME_EXTENTS);

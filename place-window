@@ -139,14 +139,21 @@ case "${1:-}" in
     master)
         # Master-stack layouts - route through daemon for window list access
         case "${2:-}" in
-            vertical|vertical-right|horizontal)
+            vertical|vertical-right|horizontal|fibonacci|dwindle)
+                # Fibonacci variants halve by default, as dwm does; the
+                # master-stack variants keep their 60% master.
+                if [[ "$2" == "fibonacci" || "$2" == "dwindle" ]]; then
+                    default_percentage=50
+                else
+                    default_percentage=60
+                fi
                 # Parse percentage and validate
                 all=""
                 if [[ "${3:-}" == "--all" ]]; then
                     all=" --all"
-                    percentage="${4:-60}"
+                    percentage="${4:-$default_percentage}"
                 else
-                    percentage="${3:-60}"
+                    percentage="${3:-$default_percentage}"
                 fi
                 if [[ "$percentage" =~ ^[0-9]+$ && $percentage -ge 10 && $percentage -le 90 ]]; then
                     send_daemon_command "master $2$all $percentage"
@@ -175,14 +182,20 @@ case "${1:-}" in
                 echo "  place-window master vertical-right [percentage] Master on right, stack on left - current monitor"
                 echo "  place-window master horizontal [percentage]     Master on top, stack on bottom - current monitor"
                 echo "  place-window master center [percentage]     Center master with sidebars - current monitor"
+                echo "  place-window master fibonacci [ratio]      Spiral tiling, winds inward - current monitor"
+                echo "  place-window master dwindle [ratio]        Spiral tiling, into the corner - current monitor"
                 echo "  place-window master vertical --all [percentage]   Apply to all monitors"
                 echo "  place-window master horizontal --all [percentage] Apply to all monitors"
+                echo "  place-window master fibonacci --all [ratio]       Apply to all monitors"
                 echo "  place-window master increase               Increase current master size by 5%"
                 echo "  place-window master decrease               Decrease current master size by 5%"
                 echo ""
                 echo "Default master percentage: 60% (range: 10-90)"
                 echo "Default center percentage: 50% (range: 20-80)"
-                echo "Size adjustments work with any active master layout (vertical/horizontal/center)"
+                echo "Default fibonacci/dwindle ratio: 50% (range: 10-90)"
+                echo "The fibonacci ratio applies at every split, so 70 gives a 70/30 tile,"
+                echo "then 70/30 of the remainder, and so on. 62 approximates the golden ratio."
+                echo "Size adjustments work with any active master layout (vertical/horizontal/center/fibonacci/dwindle)"
                 echo ""
                 echo "Note: Master commands require the daemon for window list access."
                 echo "Start daemon with: place-window watch start"
@@ -465,6 +478,7 @@ case "${1:-}" in
                 echo "  Decoration width: ${DECORATION_WIDTH}px"
                 echo "  Min width: ${MIN_WIDTH}px"
                 echo "  Min height: ${MIN_HEIGHT}px"
+                echo "  Fibonacci min tile: ${FIBONACCI_MIN_TILE}px"
 
                 # Show detected panels information
                 echo ""
@@ -532,6 +546,8 @@ Master-stack layouts:
   place-window master vertical-right [%] Master on right (current monitor)
   place-window master horizontal [%]     Master on top (current monitor)
   place-window master center [%]      Center master with sidebars (current monitor)
+  place-window master fibonacci [%]   Spiral tiling, winds inward (current monitor)
+  place-window master dwindle [%]     Spiral tiling, into the corner (current monitor)
   place-window master vertical --all [%]  Apply to all monitors
 
 Focus navigation:
@@ -576,6 +592,9 @@ Examples:
   place-window master vertical    # Master-stack with master on left (60%) - current monitor
   place-window master vertical 70 # Master-stack with 70% master, 30% stack - current monitor
   place-window master vertical --all 60 # Master-stack on all monitors (60%)
+  place-window master fibonacci   # Spiral tiling, each window halves the remainder
+  place-window master fibonacci 70 # Spiral tiling with a 70/30 split at every step
+  place-window master dwindle 62  # Golden-ratio spiral into the bottom-right corner
 
 Multi-monitor support:
 - Commands operate on the current monitor by default

@@ -803,6 +803,11 @@ master_stack_layout_current_monitor() {
             # Master on right, stack on left
             apply_meta_main_sidebar_single_monitor "$current_monitor" "$percentage" right "${windows_on_monitor[@]}"
             ;;
+        fibonacci|dwindle)
+            # Spiral tiling: each window halves what is left (dwm's fibonacci
+            # patch). Here `percentage` is the split ratio, not a master width.
+            apply_meta_fibonacci_single_monitor "$current_monitor" "$orientation" "$percentage" "${windows_on_monitor[@]}"
+            ;;
         *)
             # Master on top, stack on bottom (horizontal default)
             apply_meta_topbar_main_single_monitor "$current_monitor" "$percentage" "${windows_on_monitor[@]}"

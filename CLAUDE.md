@@ -26,6 +26,7 @@ This is a comprehensive window positioning and management tool designed specific
 - **Multi-Monitor Support**: Per-monitor layout management with boundary detection
 - **Auto-Layout System**: Intelligent window arrangements based on window count (1-5 windows)
 - **Master-Stack Layouts**: Traditional tiling WM layouts with configurable ratios
+- **Fibonacci Layouts**: `spiral` and `dwindle` tiling, ratio applied at every split
 - **Focus Navigation**: Directional window navigation (up/down/left/right/next)
 - **Simultaneous Resize**: xpytile-inspired resize with automatic adjacent window adjustment
 - **Gap Management**: Configurable pixel gaps around windows with real-time adjustment
@@ -72,6 +73,9 @@ Meta-layout system with atomic layout functions:
 - `apply_meta_topbar_main_single_monitor()`: Top bar with main content
 - `apply_meta_center_corners_single_monitor()`: Center focus with corner windows
 - `apply_meta_center_sidebar_single_monitor()`: Three-column center-focused layout
+- `apply_meta_fibonacci_single_monitor()`: Spiral tiling (dwm's fibonacci patch) — takes a
+  `spiral`/`dwindle` variant and a split ratio applied at every split; stops splitting and
+  shares the leftover box once a tile would fall under 100px
 - **Auto-Layout Engine**: Per-monitor layout coordination with preference system
 
 #### Daemon Module (lib/daemon.sh)
@@ -149,6 +153,8 @@ place-window auto               # Auto-arrange all windows
 ```bash
 place-window master vertical                     # Master-stack layout
 place-window center-master                       # Center-focused layout
+place-window master fibonacci [ratio]            # Spiral tiling, winds inward
+place-window master dwindle [ratio]              # Spiral tiling, into the corner
 ```
 
 ### Watch Mode (Systemd User Service)

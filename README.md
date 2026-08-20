@@ -152,6 +152,47 @@ place-window master horizontal  # Master top (60%), stack bottom (40%)
 ```
 Traditional tiling window manager layouts where the first window becomes the "master" and takes up the majority of space, while remaining windows are stacked in the remaining area.
 
+### Fibonacci Layouts
+```bash
+place-window master fibonacci   # Spiral: each window halves the remainder
+place-window master dwindle     # Same halving, marching into the bottom-right corner
+place-window master fibonacci 70  # 70/30 split, applied at every step
+place-window master dwindle 62    # Golden ratio, the true Fibonacci spiral
+```
+Every window takes a share of what the previous one left behind, and the split
+axis alternates, so the tiles halve inward. This is dwm's
+[fibonacci patch](https://dwm.suckless.org/patches/fibonacci/); the two
+variants differ only in which side each window takes:
+
+```
+spiral                        dwindle
++-----------+-----------+     +-----------+-----------+
+|           |     2     |     |           |     2     |
+|     1     +--+--+-----+     |     1     +-----+-----+
+|           | 5|-.|     |     |           |     |  4  |
+|           +--+--+  3  |     |           |  3  +--+--+
+|           |  4  |     |     |           |     | 5|-.|
++-----------+-----+-----+     +-----------+-----+-----+
+```
+
+`spiral` rotates the taken side (left, top, right, bottom) so the windows wind
+counter-clockwise inward; `dwindle` always takes the left or top, so the
+leftover marches into the bottom-right corner.
+
+The ratio argument applies at **every** split, not just the first: `70` gives a
+70/30 tile, then 70/30 of what remains, and so on. It defaults to `50` (dwm's
+halving) and accepts 10-90; `62` approximates the golden ratio, which is what
+makes the tiles trace an actual Fibonacci spiral. `place-window master increase`
+and `decrease` adjust it by 5% like any other master layout, and `--all` applies
+the layout across every monitor.
+
+Halving runs out of room eventually. Once a split would leave a tile under
+`FIBONACCI_MIN_TILE` (100px by default), the spiral stops and the windows still
+waiting share the leftover box evenly, rather than being handed slivers. Skewed
+ratios reach that floor sooner than 50/50 does — at 70/30 on a 1920x1080
+monitor the fourth split already wants a 98px tile — so lower the setting in
+`settings.conf` if you want the spiral to keep winding.
+
 ### Simultaneous Resize
 ```bash
 place-window resize expand-right 100   # Expand window right by 100px
@@ -235,6 +276,7 @@ Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcu
 | `place-window auto` | `Super+Shift+A` | Auto-layout all windows |
 | `place-window watch start` | `Super+Shift+W` | Start watch mode daemon |
 | `place-window master vertical` | `Super+Shift+M` | Master-stack vertical |
+| `place-window master fibonacci` | `Super+Shift+F` | Fibonacci spiral |
 | `place-window focus right` | `Super+Shift+Right` | Focus right window |
 | `place-window focus left` | `Super+Shift+Left` | Focus left window |
 | `place-window focus up` | `Super+Shift+Up` | Focus up window |
@@ -259,6 +301,7 @@ PANEL_HEIGHT=32
 # Minimum window size
 MIN_WIDTH=400
 MIN_HEIGHT=300
+FIBONACCI_MIN_TILE=100   # Smallest tile the fibonacci layouts split down to
 
 # Auto-layout preferences
 AUTO_LAYOUT_1="maximize"
