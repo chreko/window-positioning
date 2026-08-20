@@ -375,14 +375,14 @@ apply_meta_center_sidebar_single_monitor() {
 #   dwindle - the taken side is always left or top, so the leftover marches
 #             into the bottom-right corner
 #
-# `ratio` reuses the master percentage: 50 halves like dwm, 62 approximates the
-# golden ratio and makes the tiles trace an actual Fibonacci spiral.
+# `ratio` reuses the master percentage and defaults to FIBONACCI_RATIO (62, the
+# golden ratio, at which every tile keeps the same shape). 50 halves like dwm.
 #
 # $1 monitor, $2 variant (spiral|dwindle), $3 ratio percent, $@... window IDs
 apply_meta_fibonacci_single_monitor() {
     local monitor="$1"
     local variant="$2"
-    local ratio="${3:-50}"
+    local ratio="${3:-${FIBONACCI_RATIO:-62}}"
     shift 3
     local window_list=("$@")
 
@@ -612,7 +612,7 @@ reapply_saved_layout_for_monitor() {
                         apply_meta_main_sidebar_single_monitor "$monitor" "${percentage:-60}" right "${master_windows[@]}"
                         ;;
                     fibonacci|dwindle)
-                        apply_meta_fibonacci_single_monitor "$monitor" "$orientation" "${percentage:-50}" "${master_windows[@]}"
+                        apply_meta_fibonacci_single_monitor "$monitor" "$orientation" "${percentage:-${FIBONACCI_RATIO:-62}}" "${master_windows[@]}"
                         ;;
                     *)
                         apply_meta_topbar_main_single_monitor "$monitor" "${percentage:-60}" "${master_windows[@]}"

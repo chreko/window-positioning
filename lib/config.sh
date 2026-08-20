@@ -32,6 +32,14 @@ PANEL_AUTOHIDE=false
 MIN_WIDTH=400
 MIN_HEIGHT=300
 
+# Split ratio the fibonacci layouts use when no ratio is given on the command
+# line, as a percentage. 62 approximates the golden ratio (1/phi = 61.8%),
+# the one ratio at which every tile comes out the same shape as the last --
+# solve r^2 = 1-r and you get 0.618, independent of the monitor's aspect.
+# 50 is dwm's plain halving, which alternates tall and wide tiles but keeps
+# them usable deeper into the stack, since it leaves 50% per split to 62's 38%.
+FIBONACCI_RATIO=62
+
 # Smallest tile the fibonacci layouts will split down to, in pixels.
 # Halving runs out of room fast, and a few splits past this floor the tiles
 # are narrower than their own title bar. Below it the spiral stops and the
@@ -122,6 +130,7 @@ load_config() {
     PANEL_AUTOHIDE=${PANEL_AUTOHIDE:-false}
     MIN_WIDTH=${MIN_WIDTH:-400}
     MIN_HEIGHT=${MIN_HEIGHT:-300}
+    FIBONACCI_RATIO=${FIBONACCI_RATIO:-62}
     FIBONACCI_MIN_TILE=${FIBONACCI_MIN_TILE:-100}
     
     # Window decoration dimensions - configurable via settings.

@@ -276,5 +276,54 @@ check "saved dwindle layout is reapplied as dwindle" \
       "fibonacci:dwindle:62" "$(reapply "master dwindle 62")"
 
 echo
+echo "=== the ratio that actually reaches the daemon ==="
+
+# What Super+5 runs is `place-window master dwindle` with no ratio, so the
+# number that lands on the wire IS the system default. Stand up a fake daemon
+# -- is_daemon_running only checks a PID file, and the IPC is two FIFOs under
+# XDG_RUNTIME_DIR -- and echo back whatever command arrives, which
+# send_daemon_command then prints. This is the CLI-to-engine seam that hid the
+# fibonacci/spiral bug, so it is worth asserting on directly.
+export XDG_RUNTIME_DIR=$(mktemp -d)
+export HOME=$(mktemp -d)          # CONFIG_DIR is ${HOME}/.config/..., not XDG
+trap 'rm -rf "$XDG_RUNTIME_DIR" "$HOME"' EXIT
+SETTINGS="$HOME/.config/window-positioning/settings.conf"
+
+PIPE_DIR="$XDG_RUNTIME_DIR/window-positioning"
+mkdir -p "$PIPE_DIR"
+mkfifo "$PIPE_DIR/commands" "$PIPE_DIR/responses"
+echo $$ > "$PIPE_DIR/daemon.pid"   # kill -0 on our own PID always succeeds
+
+sent_command() {  # args: place-window's arguments; prints the command sent
+    ( local got
+      read -r got < "$PIPE_DIR/commands"
+      printf '%s\n__DAEMON_RESP_END__\n' "$got" > "$PIPE_DIR/responses" ) &
+    ./place-window "$@" 2>/dev/null
+    wait
+}
+
+check "bare dwindle sends the 62% default" \
+      "master dwindle 62" "$(sent_command master dwindle)"
+check "bare fibonacci sends the 62% default" \
+      "master fibonacci 62" "$(sent_command master fibonacci)"
+check "an explicit ratio still overrides it" \
+      "master dwindle 50" "$(sent_command master dwindle 50)"
+check "master vertical keeps its own 60% default" \
+      "master vertical 60" "$(sent_command master vertical)"
+
+# settings.conf is the knob, so a changed value must reach the wire.
+sed -i 's/^FIBONACCI_RATIO=.*/FIBONACCI_RATIO=70/' "$SETTINGS"
+check "FIBONACCI_RATIO in settings.conf changes the default" \
+      "master dwindle 70" "$(sent_command master dwindle)"
+
+# An install that predates the setting has no such line; load_config's
+# fallback has to cover it, or every existing dom0 config silently keeps
+# halving after an upgrade.
+grep -v '^FIBONACCI_RATIO=' "$SETTINGS" > "$SETTINGS.new"
+mv "$SETTINGS.new" "$SETTINGS"
+check "a settings.conf without the setting still gets 62" \
+      "master dwindle 62" "$(sent_command master dwindle)"
+
+echo
 echo "Results: $PASS passed, $FAIL failed"
 exit $(( FAIL > 0 ))

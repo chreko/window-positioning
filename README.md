@@ -154,10 +154,10 @@ Traditional tiling window manager layouts where the first window becomes the "ma
 
 ### Fibonacci Layouts
 ```bash
-place-window master fibonacci   # Spiral: each window halves the remainder
-place-window master dwindle     # Same halving, marching into the bottom-right corner
+place-window master fibonacci   # Spiral, golden ratio by default
+place-window master dwindle     # Same, marching into the bottom-right corner
 place-window master fibonacci 70  # 70/30 split, applied at every step
-place-window master dwindle 62    # Golden ratio, the true Fibonacci spiral
+place-window master dwindle 50    # dwm's plain halving
 ```
 Every window takes a share of what the previous one left behind, and the split
 axis alternates, so the tiles halve inward. This is dwm's
@@ -180,11 +180,25 @@ counter-clockwise inward; `dwindle` always takes the left or top, so the
 leftover marches into the bottom-right corner.
 
 The ratio argument applies at **every** split, not just the first: `70` gives a
-70/30 tile, then 70/30 of what remains, and so on. It defaults to `50` (dwm's
-halving) and accepts 10-90; `62` approximates the golden ratio, which is what
-makes the tiles trace an actual Fibonacci spiral. `place-window master increase`
-and `decrease` adjust it by 5% like any other master layout, and `--all` applies
-the layout across every monitor.
+70/30 tile, then 70/30 of what remains, and so on. It accepts 10-90 and defaults
+to `FIBONACCI_RATIO` in `settings.conf`, which ships as **62** — the golden
+ratio (1/phi = 61.8%). That is the one ratio at which every tile comes out the
+same shape as the last, just smaller; solve `r² = 1-r` and you get 0.618,
+independent of your monitor's aspect. dwm's plain `50` alternates tall and wide
+tiles instead:
+
+| | 50% (halving) | 62% (golden) |
+|---|---|---|
+| window 1 | 960×1080 → 0.89 | 1190×1080 → 1.10 |
+| window 2 | 960×540 → 1.78 | 730×669 → 1.09 |
+| window 3 | 480×540 → 0.89 | 452×411 → 1.10 |
+| window 4 | 480×270 → 1.78 | 278×254 → 1.09 |
+
+The trade-off is that 62 leaves only 38% per split, so it reaches the tile floor
+sooner than halving does — prettiest up to about five windows, while `50` stays
+usable deeper into the stack. `place-window master increase` and `decrease`
+adjust the ratio by 5% like any other master layout, and `--all` applies the
+layout across every monitor.
 
 Halving runs out of room eventually. Once a split would leave a tile under
 `FIBONACCI_MIN_TILE` (100px by default), the spiral stops and the windows still
@@ -329,6 +343,7 @@ PANEL_HEIGHT=32
 # Minimum window size
 MIN_WIDTH=400
 MIN_HEIGHT=300
+FIBONACCI_RATIO=62       # Default fibonacci split ratio (62 = golden ratio)
 FIBONACCI_MIN_TILE=100   # Smallest tile the fibonacci layouts split down to
 
 # Auto-layout preferences
