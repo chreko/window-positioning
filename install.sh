@@ -298,13 +298,13 @@ Command: place-window master vertical-right 75
 Key: Shift+Super+2
 Description: Master-stack with master on right (75/25 split)
 
-Command: place-window master fibonacci
-Key: Super+5
-Description: Fibonacci spiral tiling (each window halves the remainder)
-
 Command: place-window master dwindle
-Key: Super+6
+Key: Super+5
 Description: Fibonacci tiling into the bottom-right corner
+
+Command: place-window master fibonacci
+Key: Super+6
+Description: Fibonacci spiral tiling (each window halves the remainder)
 
 Command: place-window watch toggle
 Key: Super+Shift+W
@@ -440,7 +440,7 @@ fi
 # Install keyboard shortcuts (optional)
 echo ""
 echo "Would you like to install keyboard shortcuts for window positioning?"
-echo "  Super+1-6    : Window layouts (5/6 = fibonacci spiral/dwindle)"
+echo "  Super+1-6    : Window layouts (5/6 = fibonacci dwindle/spiral)"
 echo "  Super+Up/Down: Cycle windows"
 echo "  Super+Left/Right: Adjust master size"
 echo "  Super+w      : Toggle watch mode"
@@ -476,8 +476,8 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
             set_shortcut "<Shift><Super>at" "place-window master vertical-right 75"
             set_shortcut "<Super>3" "place-window master center"
             set_shortcut "<Super>4" "place-window master horizontal 50"
-            set_shortcut "<Super>5" "place-window master fibonacci"
-            set_shortcut "<Super>6" "place-window master dwindle"
+            set_shortcut "<Super>5" "place-window master dwindle"
+            set_shortcut "<Super>6" "place-window master fibonacci"
             set_shortcut "<Super>Up" "place-window cycle"
             set_shortcut "<Super>Down" "place-window cycle counter-clockwise"
             set_shortcut "<Super>Left" "place-window master decrease"

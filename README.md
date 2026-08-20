@@ -268,24 +268,51 @@ IGNORED_APPS="ulauncher*,*password*,cs:Settings,Application Finder"
 
 ## Keyboard Shortcuts
 
-Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcuts):
+`install.sh` offers to install these for you, writing them straight into XFCE
+via `xfconf-query`. Say yes at the prompt and they are live immediately — you
+do not need to add them by hand.
 
-| Command | Suggested Key | Description |
-|---------|---------------|-------------|
-| `place-window` | `Super+Shift+P` | Interactive mode |
-| `place-window auto` | `Super+Shift+A` | Auto-layout all windows |
-| `place-window watch start` | `Super+Shift+W` | Start watch mode daemon |
-| `place-window master vertical` | `Super+Shift+M` | Master-stack vertical |
-| `place-window master fibonacci` | `Super+5` | Fibonacci spiral (bound by `install.sh`) |
-| `place-window master dwindle` | `Super+6` | Fibonacci into the corner (bound by `install.sh`) |
-| `place-window focus right` | `Super+Shift+Right` | Focus right window |
-| `place-window focus left` | `Super+Shift+Left` | Focus left window |
-| `place-window focus up` | `Super+Shift+Up` | Focus up window |
-| `place-window focus down` | `Super+Shift+Down` | Focus down window |
-| `place-window resize expand-right` | `Super+Shift+Ctrl+Right` | Expand right |
-| `place-window resize shrink-right` | `Super+Shift+Alt+Right` | Shrink right |
+| Key | Command | Description |
+|-----|---------|-------------|
+| `Super+0` | `place-window auto` | Auto-arrange the current monitor |
+| `Super+1` | `place-window minimize-others` | Minimize all except the active window |
+| `Super+2` | `place-window master vertical 75` | Master on left (75%) |
+| `Shift+Super+2` | `place-window master vertical-right 75` | Master on right (75%) |
+| `Super+3` | `place-window master center` | Center master with sidebars |
+| `Super+4` | `place-window master horizontal 50` | Master on top (50%) |
+| `Super+5` | `place-window master dwindle` | Fibonacci, into the bottom-right corner |
+| `Super+6` | `place-window master fibonacci` | Fibonacci spiral, winds inward |
+| `Super+Up` | `place-window cycle` | Cycle windows clockwise |
+| `Super+Down` | `place-window cycle counter-clockwise` | Cycle windows counter-clockwise |
+| `Super+Left` | `place-window master decrease` | Shrink the master by 5% |
+| `Super+Right` | `place-window master increase` | Grow the master by 5% |
+| `Super+w` | `place-window watch toggle` | Toggle the watch-mode daemon |
+| `Super+s` | `place-window swap` | Swap window positions |
+| `Super+!` | `place-window reapply` | Reapply the saved layout |
 
-See `~/.config/window-positioning/keyboard-shortcuts.txt` for complete list.
+Two of those depend on your keyboard layout. XFCE stores a shifted digit under
+the *shifted keysym* rather than the digit, so `Shift+Super+2` is written as
+`<Shift><Super>at` and `Super+!` as `<Super>exclam` — correct on US/QWERTY,
+different elsewhere. If either does not fire after install, rebind it in
+Settings → Keyboard → Application Shortcuts.
+
+### Not installed, but worth binding
+
+These commands have no default shortcut. Add them yourself in Settings →
+Keyboard → Application Shortcuts if you want them:
+
+| Suggested key | Command | Description |
+|---------------|---------|-------------|
+| `Super+Shift+P` | `place-window` | Interactive mode (click to select) |
+| `Super+Shift+Left` | `place-window focus left` | Focus the window to the left |
+| `Super+Shift+Right` | `place-window focus right` | Focus the window to the right |
+| `Super+Shift+Up` | `place-window focus up` | Focus the window above |
+| `Super+Shift+Down` | `place-window focus down` | Focus the window below |
+| `Super+Shift+Ctrl+Right` | `place-window resize expand-right 100` | Expand right, adjusting neighbours |
+| `Super+Shift+Alt+Right` | `place-window resize shrink-right 100` | Shrink right, adjusting neighbours |
+
+The installed shortcuts are also written to
+`~/.config/window-positioning/keyboard-shortcuts.txt` for reference.
 
 ## Configuration
 
