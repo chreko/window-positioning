@@ -277,6 +277,7 @@ Set up keyboard shortcuts in XFCE (Settings → Keyboard → Application Shortcu
 | `place-window watch start` | `Super+Shift+W` | Start watch mode daemon |
 | `place-window master vertical` | `Super+Shift+M` | Master-stack vertical |
 | `place-window master fibonacci` | `Super+Shift+F` | Fibonacci spiral |
+| `place-window master dwindle` | `Super+Shift+D` | Fibonacci into the corner |
 | `place-window focus right` | `Super+Shift+Right` | Focus right window |
 | `place-window focus left` | `Super+Shift+Left` | Focus left window |
 | `place-window focus up` | `Super+Shift+Up` | Focus up window |

@@ -298,6 +298,14 @@ Command: place-window master vertical-right 75
 Key: Shift+Super+2
 Description: Master-stack with master on right (75/25 split)
 
+Command: place-window master fibonacci
+Key: Super+Shift+F
+Description: Fibonacci spiral tiling (each window halves the remainder)
+
+Command: place-window master dwindle
+Key: Super+Shift+D
+Description: Fibonacci tiling into the bottom-right corner
+
 Command: place-window watch toggle
 Key: Super+Shift+W
 Description: Toggle watch mode daemon
